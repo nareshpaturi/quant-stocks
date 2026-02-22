@@ -1,6 +1,6 @@
 # quant-stocks
 
-A weekly stock portfolio rebalancer that runs automatically as a GitHub Action every Monday morning. It connects to your Tradier brokerage account, reads a momentum rankings file you provide, and executes the minimum set of trades needed to keep your portfolio aligned with the strategy.
+A weekly stock portfolio rebalancer that runs automatically as a GitHub Action every Monday morning. It connects to your Tradier brokerage account, fetches the latest momentum rankings from the QuantMyStocks leaderboard API, and executes the minimum set of trades needed to keep your portfolio aligned with the strategy.
 
 You configure everything through GitHub Secrets and Variables — no code changes required.
 
@@ -22,22 +22,45 @@ Each week, for every stock you currently hold:
 | Rank > `MAX_STOCKS + SLACK_VALUE` | **Sell** — fallen too far |
 | Not in the rankings at all | **Sell** — no longer in the index |
 
-After selling, the proceeds are split equally and used to **buy the highest-ranked stocks not already held**, until the portfolio is back to `MAX_STOCKS` positions.
+After selling, the proceeds plus any existing cash are split equally across the open slots and used to **buy the highest-ranked stocks not already held** (only stocks ranked ≤ `MAX_STOCKS` are eligible), until the portfolio is back to `MAX_STOCKS` positions. Share counts are rounded down to whole shares.
 
 **Example** — `MAX_STOCKS=5`, `SLACK_VALUE=2` (threshold = 7):
 
 ```
-Held:  AAPL(rank 1), MSFT(rank 2), TSLA(rank 9), NVDA(rank 6)
-───────────────────────────────────────────────────────────────
-AAPL  rank 1  ≤ 5        → keep
-MSFT  rank 2  ≤ 5        → keep
-NVDA  rank 6  ≤ 7        → keep (slack zone)
-TSLA  rank 9  > 7        → SELL
+Index rankings this week          Current portfolio
+──────────────────────────────    ─────────────────────────────────────────
+Rank 1  AAPL   $195              AAPL  10 shares  @ $195  → held (rank 1 ≤ 5)
+Rank 2  MSFT   $415              MSFT   5 shares  @ $415  → held (rank 2 ≤ 5)
+Rank 3  GOOG   $171              NVDA   8 shares  @ $875  → held (rank 6 ≤ 7, slack)
+Rank 4  AMZN   $182              TSLA   5 shares  @ $250  → SELL (rank 9 > 7)
+Rank 5  NVDA   $875
+Rank 6  META   $490  ← not eligible (rank 6 > MAX_STOCKS=5, can't buy)
+...
+Rank 9  TSLA   $250
 
-Proceeds split across 2 open slots → BUY GOOG (rank 3), AMZN (rank 4)
+Step 1 — Sell
+─────────────
+TSLA:  sell 5 shares × $250 = $1,250 proceeds
 
-Final: AAPL, MSFT, NVDA, GOOG, AMZN
+Step 2 — Size the buys
+───────────────────────
+Available cash before sell:   $500
++ TSLA sell proceeds:       + $1,250
+                            ────────
+Total cash for buying:        $1,750
+
+Open slots: MAX_STOCKS(5) − retained(3) = 2 slots  →  GOOG (rank 3), AMZN (rank 4)
+Cash per slot: $1,750 ÷ 2 = $875
+
+Step 3 — Buy
+─────────────
+GOOG:  floor($875 ÷ $171) = 5 shares
+AMZN:  floor($875 ÷ $182) = 4 shares
+
+Final portfolio: AAPL, MSFT, NVDA, GOOG, AMZN
 ```
+
+> **Note:** META is rank 6, which is within the slack zone, but it is **not eligible for buying** — only stocks ranked ≤ `MAX_STOCKS` (≤ 5) can be purchased. The slack zone only protects stocks you *already hold* from being sold prematurely.
 
 ---
 
@@ -51,7 +74,6 @@ You can run as many portfolios as you want in parallel. Each one tracks a differ
 | `ndx` | Nasdaq-100 |
 | `sp400` | S&P 400 Mid-Cap |
 | `sp600` | S&P 600 Small-Cap |
-| any string | Your own custom ranking list |
 
 ---
 
@@ -92,7 +114,7 @@ Replace `N` with `1`, `2`, `3`, etc.
 | Variable | Description | Example |
 |---|---|---|
 | `PROFILE_N_NAME` | Human-readable label shown in logs | `SP500 Momentum` |
-| `PROFILE_N_INDEX` | Index key — must match your rankings file | `sp500` |
+| `PROFILE_N_INDEX` | Index key — one of: `sp500`, `sp400`, `sp600`, `ndx` | `sp500` |
 | `PROFILE_N_MAX_STOCKS` | Target number of holdings | `25` |
 | `PROFILE_N_SLACK_VALUE` | Retention buffer (0 = no slack) | `5` |
 | `PROFILE_N_TRADIER_SANDBOX` | `true` for paper trading, `false` for live | `false` |
@@ -121,7 +143,17 @@ PROFILE_2_TRADIER_SANDBOX  = false
 
 Go to **Settings → Secrets and Variables → Actions → Secrets → New repository secret**.
 
-These are your Tradier credentials. They are encrypted and never shown in logs.
+These are encrypted and never shown in logs.
+
+#### Required — one shared secret for rankings
+
+| Secret | Description |
+|---|---|
+| `RANKING_API_TOKEN` | Your QuantMyStocks API Bearer token |
+
+Get your token from your QuantMyStocks account dashboard.
+
+#### Required per profile — Tradier credentials
 
 | Secret | Description |
 |---|---|
@@ -131,6 +163,8 @@ These are your Tradier credentials. They are encrypted and never shown in logs.
 **Example — two profiles:**
 
 ```
+RANKING_API_TOKEN             = <your QuantMyStocks API token>
+
 PROFILE_1_TRADIER_TOKEN       = <your SP500 account token>
 PROFILE_1_TRADIER_ACCOUNT_ID  = <your SP500 account number>
 
@@ -140,13 +174,11 @@ PROFILE_2_TRADIER_ACCOUNT_ID  = <your NDX account number>
 
 ---
 
-### Step 5 — Rankings are automatic
+### Step 5 — Rankings are fetched automatically
 
-No extra setup required. The rebalancer fetches momentum rankings automatically from the [QuantMyStocks](https://quantmystocks.com) leaderboard API every time it runs.
+The rebalancer calls the QuantMyStocks leaderboard API on every run — no CSV files or manual data preparation required. It sends a POST request with the index identifier and the most recent trading day, and receives a ranked list of tickers in response. Current prices are then fetched from Tradier's quotes endpoint to calculate share counts.
 
-Just set `PROFILE_N_INDEX` to one of the supported values:
-
-| Index key | Index |
+| Index key | QuantMyStocks index |
 |---|---|
 | `sp500` | S&P 500 |
 | `sp400` | S&P 400 Mid-Cap |
@@ -180,7 +212,10 @@ The rebalancer will never place the same order twice in one run. If a sell or bu
 
 ## Troubleshooting
 
-**Workflow fails with "GitHub Variable PROFILE_1_TRADIER_TOKEN is not set"**
+**Workflow fails with "GitHub Secret RANKING_API_TOKEN is not set"**
+→ Add your QuantMyStocks API token as a Secret named `RANKING_API_TOKEN`. Follow Step 4 above.
+
+**Workflow fails with "GitHub Secret PROFILE_1_TRADIER_TOKEN is not set"**
 → A required Secret was not added. Follow Step 4 above.
 
 **Workflow fails with "GitHub Variable PROFILE_COUNT is not set"**
@@ -227,6 +262,7 @@ PROFILE_COUNT=1 \
   PROFILE_1_MAX_STOCKS=25 \
   PROFILE_1_SLACK_VALUE=5 \
   PROFILE_1_BROKER_TYPE=mock \
+  RANKING_API_TOKEN="<your token>" \
   go run ./cmd/rebalancer
 
 # Run domain unit tests
@@ -255,10 +291,7 @@ quant-stocks/
 │       │   ├── tradier_broker.go       # Tradier REST API adapter
 │       │   └── mock_broker.go          # In-memory mock for testing
 │       └── ranking/
-│           ├── static_ranking.go       # CSV file ranking provider
-│           └── mock_ranking.go         # Hardcoded mock for testing
-├── rankings/                           # Commit your CSV rankings files here
-│   ├── sp500.csv
-│   └── ndx.csv
+│           ├── quantmystocks.go        # QuantMyStocks leaderboard API adapter
+│           └── mock_ranking.go         # Hardcoded mock for local testing
 └── .github/workflows/weekly-rebalance.yml
 ```
