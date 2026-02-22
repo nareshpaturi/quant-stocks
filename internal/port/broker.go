@@ -26,6 +26,11 @@ type Broker interface {
 	// Used by the service layer to enforce idempotency before placing new orders.
 	GetOpenOrders(ctx context.Context) ([]domain.OpenOrder, error)
 
+	// GetQuotes returns the latest last-trade price for each requested ticker.
+	// Used by the service layer to price buy candidates whose price is not
+	// included in the rankings feed.
+	GetQuotes(ctx context.Context, tickers []string) (map[string]float64, error)
+
 	// ExecuteOrder submits a market order to the broker.
 	// Returns the broker-assigned order ID on success.
 	// For sells, order.Shares is the full position quantity.

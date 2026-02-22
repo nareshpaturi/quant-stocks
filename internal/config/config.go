@@ -4,19 +4,21 @@
 // entirely through GitHub Secrets and Variables:
 //
 //	GitHub Variables  (Settings → Secrets and Variables → Actions → Variables)
-//	  PROFILE_COUNT            how many profiles to run (e.g. "3")
-//	  PROFILE_1_NAME           human label  (e.g. "SP500 Momentum")
-//	  PROFILE_1_INDEX          index key    (e.g. "sp500")
-//	  PROFILE_1_MAX_STOCKS     target size  (e.g. "25")
-//	  PROFILE_1_SLACK_VALUE    retention buffer (e.g. "5")
-//	  PROFILE_1_RANKING_CSV_FILE  path to rankings CSV (e.g. "rankings/sp500.csv")
-//	  PROFILE_1_TRADIER_SANDBOX   "true" for sandbox, "false" for live
+//	  PROFILE_COUNT              how many profiles to run (e.g. "3")
+//	  PROFILE_1_NAME             human label  (e.g. "SP500 Momentum")
+//	  PROFILE_1_INDEX            index key    (e.g. "sp500")
+//	  PROFILE_1_MAX_STOCKS       target size  (e.g. "25")
+//	  PROFILE_1_SLACK_VALUE      retention buffer (e.g. "5")
+//	  PROFILE_1_TRADIER_SANDBOX  "true" for sandbox, "false" for live
 //	  ... repeat for PROFILE_2_, PROFILE_3_, etc.
 //
 //	GitHub Secrets  (Settings → Secrets and Variables → Actions → Secrets)
 //	  PROFILE_1_TRADIER_TOKEN       Tradier Bearer token
 //	  PROFILE_1_TRADIER_ACCOUNT_ID  Tradier account number
 //	  ... repeat for PROFILE_2_, PROFILE_3_, etc.
+//
+// Rankings are fetched automatically from the QuantMyStocks leaderboard API —
+// no CSV files or external data preparation required.
 package config
 
 import (
@@ -27,7 +29,10 @@ import (
 
 // Config is the root configuration holding all profiles.
 type Config struct {
-	Profiles []ProfileConfig
+	Profiles        []ProfileConfig
+	RankingAPIURL   string // overrides the default QuantMyStocks API URL (optional)
+	RankingAPIToken string // Bearer token for the QuantMyStocks API (from GitHub Secret)
+	RankingMode     string // "mock" skips the real API; empty/other uses QuantMyStocks
 }
 
 // ProfileConfig defines one independent rebalancing portfolio.
@@ -36,8 +41,8 @@ type ProfileConfig struct {
 	// Name is a human-readable label used in log output (e.g. "SP500 Momentum").
 	Name string
 
-	// Index identifies which leaderboard to fetch (e.g. "sp500", "ndx", "sp400").
-	// Passed to RankingProvider.GetRankings.
+	// Index identifies which leaderboard to fetch.
+	// Supported values: "sp500", "sp400", "sp600", "ndx".
 	Index string
 
 	// MaxStocks (N): target portfolio size.
@@ -47,8 +52,7 @@ type ProfileConfig struct {
 	// A held stock at rank R is kept if R <= N+S, sold if R > N+S.
 	SlackValue int
 
-	Broker  BrokerConfig
-	Ranking RankingConfig
+	Broker BrokerConfig
 }
 
 // BrokerConfig specifies which broker adapter to use and its credentials.
@@ -64,16 +68,6 @@ type BrokerConfig struct {
 
 	// Sandbox routes to sandbox.tradier.com when true.
 	Sandbox bool
-}
-
-// RankingConfig specifies which ranking provider to use.
-type RankingConfig struct {
-	// Type selects the adapter: "csv" (default) or "mock".
-	Type string
-
-	// File is the path to the CSV rankings file (required when Type="csv").
-	// Format per row: ticker,rank,price
-	File string
 }
 
 // LoadFromEnv reads all profile configuration from environment variables.
@@ -103,7 +97,12 @@ func LoadFromEnv() (*Config, error) {
 		profiles = append(profiles, p)
 	}
 
-	return &Config{Profiles: profiles}, nil
+	return &Config{
+		Profiles:        profiles,
+		RankingAPIURL:   os.Getenv("RANKING_API_URL"),   // optional override; empty = use default
+		RankingAPIToken: os.Getenv("RANKING_API_TOKEN"), // Bearer token for QuantMyStocks API
+		RankingMode:     os.Getenv("RANKING_MODE"),      // "mock" for local testing without API
+	}, nil
 }
 
 // loadProfile reads one profile from the PROFILE_N_* env vars.
@@ -130,10 +129,6 @@ func loadProfile(n int) (ProfileConfig, error) {
 			AccountID: os.Getenv(pfx + "TRADIER_ACCOUNT_ID"),
 			Sandbox:   os.Getenv(pfx+"TRADIER_SANDBOX") == "true",
 		},
-		Ranking: RankingConfig{
-			Type: envOrDefault(pfx+"RANKING_TYPE", "csv"),
-			File: os.Getenv(pfx + "RANKING_CSV_FILE"),
-		},
 	}, nil
 }
 
@@ -144,9 +139,16 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("no profiles loaded — check PROFILE_COUNT")
 	}
 
+	if c.RankingMode != "mock" && c.RankingAPIToken == "" {
+		return fmt.Errorf(
+			"GitHub Secret RANKING_API_TOKEN is not set — " +
+				"set it to your QuantMyStocks API Bearer token",
+		)
+	}
+
 	seen := make(map[string]bool, len(c.Profiles))
 	for i, p := range c.Profiles {
-		n := i + 1 // 1-indexed for the error message
+		n := i + 1
 		pfx := fmt.Sprintf("PROFILE_%d_", n)
 
 		if p.Name == "" {
@@ -185,22 +187,6 @@ func (c *Config) Validate() error {
 			return fmt.Errorf(
 				"GitHub Variable %sBROKER_TYPE is %q — must be \"tradier\" or \"mock\" (profile %q)",
 				pfx, p.Broker.Type, p.Name,
-			)
-		}
-
-		switch p.Ranking.Type {
-		case "csv":
-			if p.Ranking.File == "" {
-				return fmt.Errorf(
-					"GitHub Variable %sRANKING_CSV_FILE is not set (profile %q)", pfx, p.Name,
-				)
-			}
-		case "mock":
-			// no file required
-		default:
-			return fmt.Errorf(
-				"GitHub Variable %sRANKING_TYPE is %q — must be \"csv\" or \"mock\" (profile %q)",
-				pfx, p.Ranking.Type, p.Name,
 			)
 		}
 	}

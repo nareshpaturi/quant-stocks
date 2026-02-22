@@ -85,6 +85,24 @@ func (s *RebalanceService) Run(ctx context.Context, cfg domain.PortfolioConfig) 
 	}
 	s.logger.Info("rankings fetched", "count", len(rankings))
 
+	// 4b. Enrich rankings with current prices from the broker.
+	// The QuantMyStocks API does not return prices; the broker quotes endpoint
+	// provides them. If a ranking already has a non-zero price (e.g. from a
+	// mock provider) it is preserved so mock runs stay self-contained.
+	tickers := make([]string, len(rankings))
+	for i, r := range rankings {
+		tickers[i] = r.Ticker
+	}
+	quotes, err := s.broker.GetQuotes(ctx, tickers)
+	if err != nil {
+		return fmt.Errorf("get quotes for ranked tickers: %w", err)
+	}
+	for i := range rankings {
+		if p := quotes[rankings[i].Ticker]; p > 0 {
+			rankings[i].Price = p
+		}
+	}
+
 	// 5. Compute orders via pure domain logic.
 	result := domain.Rebalance(cfg, positions, rankings, cash)
 	s.logger.Info("rebalance computed",

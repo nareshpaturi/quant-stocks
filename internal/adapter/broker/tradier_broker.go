@@ -193,6 +193,20 @@ func (t *TradierBroker) GetOpenOrders(ctx context.Context) ([]domain.OpenOrder, 
 	return open, nil
 }
 
+// ── GetQuotes ─────────────────────────────────────────────────────────────────
+
+// GetQuotes returns the latest last-trade price for each requested ticker.
+func (t *TradierBroker) GetQuotes(ctx context.Context, tickers []string) (map[string]float64, error) {
+	if len(tickers) == 0 {
+		return map[string]float64{}, nil
+	}
+	prices, err := t.fetchQuotes(ctx, tickers)
+	if err != nil {
+		return nil, fmt.Errorf("tradier GetQuotes: %w", err)
+	}
+	return prices, nil
+}
+
 // ── ExecuteOrder ─────────────────────────────────────────────────────────────
 
 // ExecuteOrder submits a market equity order to Tradier using a form-encoded

@@ -33,6 +33,21 @@ func (m *MockBroker) GetCash(_ context.Context) (float64, error) {
 	return m.Cash, nil
 }
 
+// GetQuotes returns the last-trade price for each requested ticker from the
+// mock positions. Tickers not in Positions return 0 (price preserved from
+// the ranking provider for mock runs).
+func (m *MockBroker) GetQuotes(_ context.Context, tickers []string) (map[string]float64, error) {
+	posMap := make(map[string]float64, len(m.Positions))
+	for _, p := range m.Positions {
+		posMap[p.Ticker] = p.CurrentPrice
+	}
+	result := make(map[string]float64, len(tickers))
+	for _, t := range tickers {
+		result[t] = posMap[t]
+	}
+	return result, nil
+}
+
 // GetOpenOrders returns the pre-seeded open orders (empty by default).
 func (m *MockBroker) GetOpenOrders(_ context.Context) ([]domain.OpenOrder, error) {
 	return m.OpenOrders, nil

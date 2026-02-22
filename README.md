@@ -53,8 +53,6 @@ You can run as many portfolios as you want in parallel. Each one tracks a differ
 | `sp600` | S&P 600 Small-Cap |
 | any string | Your own custom ranking list |
 
-The index key is just a label — you supply the actual rankings as a CSV file (see [Rankings file format](#rankings-file-format) below).
-
 ---
 
 ## Setup guide
@@ -97,7 +95,6 @@ Replace `N` with `1`, `2`, `3`, etc.
 | `PROFILE_N_INDEX` | Index key — must match your rankings file | `sp500` |
 | `PROFILE_N_MAX_STOCKS` | Target number of holdings | `25` |
 | `PROFILE_N_SLACK_VALUE` | Retention buffer (0 = no slack) | `5` |
-| `PROFILE_N_RANKING_CSV_FILE` | Path to your rankings CSV in the repo | `rankings/sp500.csv` |
 | `PROFILE_N_TRADIER_SANDBOX` | `true` for paper trading, `false` for live | `false` |
 
 **Example — two profiles:**
@@ -109,14 +106,12 @@ PROFILE_1_NAME          = SP500 Momentum
 PROFILE_1_INDEX         = sp500
 PROFILE_1_MAX_STOCKS    = 25
 PROFILE_1_SLACK_VALUE   = 5
-PROFILE_1_RANKING_CSV_FILE = rankings/sp500.csv
 PROFILE_1_TRADIER_SANDBOX  = false
 
 PROFILE_2_NAME          = NDX Top 10
 PROFILE_2_INDEX         = ndx
 PROFILE_2_MAX_STOCKS    = 10
 PROFILE_2_SLACK_VALUE   = 2
-PROFILE_2_RANKING_CSV_FILE = rankings/ndx.csv
 PROFILE_2_TRADIER_SANDBOX  = false
 ```
 
@@ -126,7 +121,17 @@ PROFILE_2_TRADIER_SANDBOX  = false
 
 Go to **Settings → Secrets and Variables → Actions → Secrets → New repository secret**.
 
-These are your Tradier credentials. They are encrypted and never shown in logs.
+These are encrypted and never shown in logs.
+
+#### Required — one shared secret for rankings
+
+| Secret | Description |
+|---|---|
+| `RANKING_API_TOKEN` | Your QuantMyStocks API Bearer token |
+
+Get your token from your QuantMyStocks account dashboard.
+
+#### Required per profile — Tradier credentials
 
 | Secret | Description |
 |---|---|
@@ -136,6 +141,8 @@ These are your Tradier credentials. They are encrypted and never shown in logs.
 **Example — two profiles:**
 
 ```
+RANKING_API_TOKEN             = <your QuantMyStocks API token>
+
 PROFILE_1_TRADIER_TOKEN       = <your SP500 account token>
 PROFILE_1_TRADIER_ACCOUNT_ID  = <your SP500 account number>
 
@@ -145,42 +152,20 @@ PROFILE_2_TRADIER_ACCOUNT_ID  = <your NDX account number>
 
 ---
 
-### Step 5 — Add your rankings files
+### Step 5 — Rankings are automatic
 
-The rebalancer reads a CSV file from your repository to know the current week's momentum rankings. You are responsible for generating or updating this file weekly (before the rebalancer runs at 10:35 AM ET Monday).
+No extra setup required. The rebalancer fetches momentum rankings automatically from the [QuantMyStocks](https://quantmystocks.com) leaderboard API every time it runs.
 
-Create a folder called `rankings/` in your fork and commit one CSV file per profile.
+Just set `PROFILE_N_INDEX` to one of the supported values:
 
-#### Rankings file format
-
-Three columns per row, no header required:
-
-```
-ticker,rank,price
-```
-
-| Column | Description |
+| Index key | Index |
 |---|---|
-| `ticker` | Stock symbol (e.g. `AAPL`) |
-| `rank` | Integer rank, 1 = highest momentum |
-| `price` | Latest market price (used to calculate share count) |
+| `sp500` | S&P 500 |
+| `sp400` | S&P 400 Mid-Cap |
+| `sp600` | S&P 600 Small-Cap |
+| `ndx` | Nasdaq-100 |
 
-**Example — `rankings/sp500.csv`:**
-
-```csv
-AAPL,1,195.50
-NVDA,2,875.00
-MSFT,3,415.20
-AMZN,4,182.00
-GOOG,5,171.00
-META,6,490.00
-NFLX,7,630.00
-...
-```
-
-Lines starting with `#` are treated as comments and ignored.
-
-> **Tip:** You can add a second GitHub Action that generates this file automatically from a data source (e.g. a financial data API) and commits it to the repo every Sunday night, so the rankings are always fresh before Monday's rebalance.
+Rankings reflect the most recent market close (Friday's close when the Action runs on Monday morning).
 
 ---
 
@@ -244,18 +229,16 @@ PROFILE_COUNT=1 \
   PROFILE_1_MAX_STOCKS=5 \
   PROFILE_1_SLACK_VALUE=2 \
   PROFILE_1_BROKER_TYPE=mock \
-  PROFILE_1_RANKING_TYPE=mock \
+  RANKING_MODE=mock \
   go run ./cmd/rebalancer
 
-# Run with a real CSV rankings file and mock broker
+# Run against the live QuantMyStocks API with mock broker
 PROFILE_COUNT=1 \
   PROFILE_1_NAME="SP500" \
   PROFILE_1_INDEX=sp500 \
   PROFILE_1_MAX_STOCKS=25 \
   PROFILE_1_SLACK_VALUE=5 \
   PROFILE_1_BROKER_TYPE=mock \
-  PROFILE_1_RANKING_TYPE=csv \
-  PROFILE_1_RANKING_CSV_FILE=rankings/sp500.csv \
   go run ./cmd/rebalancer
 
 # Run domain unit tests
@@ -284,10 +267,7 @@ quant-stocks/
 │       │   ├── tradier_broker.go       # Tradier REST API adapter
 │       │   └── mock_broker.go          # In-memory mock for testing
 │       └── ranking/
-│           ├── static_ranking.go       # CSV file ranking provider
+│           ├── quantmystocks.go        # QuantMyStocks leaderboard API adapter
 │           └── mock_ranking.go         # Hardcoded mock for testing
-├── rankings/                           # Commit your CSV rankings files here
-│   ├── sp500.csv
-│   └── ndx.csv
 └── .github/workflows/weekly-rebalance.yml
 ```
