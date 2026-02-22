@@ -75,8 +75,8 @@ func TestRebalance(t *testing.T) {
 		{
 			name: "top-N stock is retained with no sell",
 			// AAPL rank 1, held, N=5 → keep, no trade.
-			// 4 open slots filled from top-5 non-held; uniform $100 price keeps math simple.
-			cfg: domain.PortfolioConfig{MaxStocks: 5, SlackValue: 2},
+			// 4 organic slots filled via InitialAmountPerStock; uniform $100 price.
+			cfg: domain.PortfolioConfig{MaxStocks: 5, SlackValue: 2, InitialAmountPerStock: 5000},
 			positions: []domain.Position{
 				{Ticker: "AAPL", Shares: 10, CurrentPrice: 100},
 			},
@@ -87,16 +87,16 @@ func TestRebalance(t *testing.T) {
 				{Ticker: "AMZN", Position: 4, Price: 100},
 				{Ticker: "GOOG", Position: 5, Price: 100},
 			},
-			cash:        5000, // enough to buy all 4 open slots
+			cash:        0,
 			wantSells:   nil,
-			wantBuys:    []string{"NVDA", "MSFT", "AMZN", "GOOG"}, // 4 empty slots
+			wantBuys:    []string{"NVDA", "MSFT", "AMZN", "GOOG"}, // 4 organic slots
 			wantRetains: []string{"AAPL"},
 		},
 		{
 			name: "stock in slack zone is retained without sell",
 			// TSLA rank 6, N=5, S=3 → threshold=8. 6<=8 → retain.
-			// 2 held (AAPL, TSLA) → 3 open slots → buy top-3 non-held (rank 2, 3, 4).
-			cfg: domain.PortfolioConfig{MaxStocks: 5, SlackValue: 3},
+			// 2 held (AAPL, TSLA) → 3 organic slots → buy top-3 non-held (rank 2, 3, 4).
+			cfg: domain.PortfolioConfig{MaxStocks: 5, SlackValue: 3, InitialAmountPerStock: 5000},
 			positions: []domain.Position{
 				{Ticker: "TSLA", Shares: 5, CurrentPrice: 100},
 				{Ticker: "AAPL", Shares: 10, CurrentPrice: 100},
@@ -109,16 +109,17 @@ func TestRebalance(t *testing.T) {
 				{Ticker: "GOOG", Position: 5, Price: 100},
 				{Ticker: "TSLA", Position: 6, Price: 100},
 			},
-			cash:        5000,
+			cash:        0,
 			wantSells:   nil,
-			wantBuys:    []string{"NVDA", "MSFT", "AMZN"}, // 3 open slots (MaxStocks=5 − 2 retained)
+			wantBuys:    []string{"NVDA", "MSFT", "AMZN"}, // 3 organic slots (MaxStocks=5 − 2 retained)
 			wantRetains: []string{"TSLA", "AAPL"},
 		},
 		{
 			name: "stock beyond slack is liquidated",
 			// TSLA rank 9, N=5, S=3 → threshold=8. 9>8 → sell.
-			// Sell proceeds + existing cash must cover all 5 buy slots.
-			cfg: domain.PortfolioConfig{MaxStocks: 5, SlackValue: 3},
+			// 1 sell (TSLA 5*100=$500) → 1 sell-funded slot (AAPL gets $500).
+			// 4 organic slots (MSFT,NVDA,AMZN,GOOG) → each gets InitialAmountPerStock.
+			cfg: domain.PortfolioConfig{MaxStocks: 5, SlackValue: 3, InitialAmountPerStock: 5000},
 			positions: []domain.Position{
 				{Ticker: "TSLA", Shares: 5, CurrentPrice: 100},
 			},
@@ -130,14 +131,15 @@ func TestRebalance(t *testing.T) {
 				{Ticker: "GOOG", Position: 5, Price: 100},
 				{Ticker: "TSLA", Position: 9, Price: 100},
 			},
-			cash:      5000, // projected = 5000 + 5*100 = 5500; 5500/5=1100 per slot; floor(1100/100)=11
+			cash:      0,
 			wantSells: []string{"TSLA"},
 			wantBuys:  []string{"AAPL", "MSFT", "NVDA", "AMZN", "GOOG"},
 		},
 		{
 			name: "stock not in index at all is liquidated",
-			// Sell proceeds + existing cash must cover all 5 buy slots.
-			cfg: domain.PortfolioConfig{MaxStocks: 5, SlackValue: 2},
+			// 1 sell (OBSOLETE 10*100=$1000) → 1 sell-funded slot (AAPL gets $1000).
+			// 4 organic slots (MSFT,NVDA,AMZN,GOOG) → each gets InitialAmountPerStock.
+			cfg: domain.PortfolioConfig{MaxStocks: 5, SlackValue: 2, InitialAmountPerStock: 5000},
 			positions: []domain.Position{
 				{Ticker: "OBSOLETE", Shares: 10, CurrentPrice: 100},
 			},
@@ -148,13 +150,15 @@ func TestRebalance(t *testing.T) {
 				{Ticker: "AMZN", Position: 4, Price: 100},
 				{Ticker: "GOOG", Position: 5, Price: 100},
 			},
-			cash:      5000, // projected = 5000 + 10*100 = 6000; 6000/5=1200; floor(1200/100)=12
+			cash:      0,
 			wantSells: []string{"OBSOLETE"},
 			wantBuys:  []string{"AAPL", "MSFT", "NVDA", "AMZN", "GOOG"},
 		},
 		{
-			name: "empty portfolio buys top-N stocks from cash",
-			cfg:  domain.PortfolioConfig{MaxStocks: 3, SlackValue: 1},
+			name: "empty portfolio buys top-N stocks from InitialAmountPerStock",
+			// All 3 slots are organic → each gets InitialAmountPerStock=$2000.
+			// AAPL floor(2000/200)=10, MSFT floor(2000/400)=5, NVDA floor(2000/800)=2.
+			cfg: domain.PortfolioConfig{MaxStocks: 3, SlackValue: 1, InitialAmountPerStock: 2000},
 			positions: nil,
 			rankings: []domain.Rank{
 				{Ticker: "AAPL", Position: 1, Price: 200},
@@ -162,13 +166,14 @@ func TestRebalance(t *testing.T) {
 				{Ticker: "NVDA", Position: 3, Price: 800},
 				{Ticker: "GOOG", Position: 4, Price: 150}, // rank 4 > MaxStocks=3, excluded
 			},
-			cash:      6000,
+			cash:      0,
 			wantSells: nil,
 			wantBuys:  []string{"AAPL", "MSFT", "NVDA"},
 		},
 		{
-			name: "projected cash after sells funds buys",
-			// $0 cash + sell 10 TSLA @ $250 = $2500 projected.
+			name: "sell proceeds fund replacement buy",
+			// Sell 10 TSLA @ $250 = $2500 proceeds → 1 sell-funded slot.
+			// AAPL: floor(2500/200) = 12 shares. No organic slots.
 			cfg: domain.PortfolioConfig{MaxStocks: 1, SlackValue: 0},
 			positions: []domain.Position{
 				{Ticker: "TSLA", Shares: 10, CurrentPrice: 250},
@@ -199,39 +204,41 @@ func TestRebalance(t *testing.T) {
 			wantRetains: []string{"AAPL", "MSFT"},
 		},
 		{
-			name: "zero cash and no sells means no buys",
-			cfg:  domain.PortfolioConfig{MaxStocks: 5, SlackValue: 1},
+			name: "zero InitialAmountPerStock means no organic buys",
+			// InitialAmountPerStock=0 → sharesToBuy(0, 200)=0 → all organic slots skipped.
+			cfg:  domain.PortfolioConfig{MaxStocks: 5, SlackValue: 1, InitialAmountPerStock: 0},
 			positions: nil,
 			rankings: []domain.Rank{
 				{Ticker: "AAPL", Position: 1, Price: 200},
 			},
 			cash:      0,
 			wantSells: nil,
-			wantBuys:  nil, // floor(0/200) = 0 shares → skipped
+			wantBuys:  nil,
 		},
 		{
 			name: "buy share count uses floor not round",
-			// $1000 / $300 = 3.33 → floor to 3, not 4.
-			cfg:       domain.PortfolioConfig{MaxStocks: 1, SlackValue: 0},
+			// Organic slot: $1000 / $300 = 3.33 → floor to 3, not 4.
+			cfg:       domain.PortfolioConfig{MaxStocks: 1, SlackValue: 0, InitialAmountPerStock: 1000},
 			positions: nil,
 			rankings: []domain.Rank{
 				{Ticker: "AAPL", Position: 1, Price: 300},
 			},
-			cash:      1000,
+			cash:      0,
 			wantSells: nil,
 			wantBuys:  []string{"AAPL"},
 		},
 		{
 			name: "only top-N ranked stocks are eligible for buy",
 			// NVDA at rank N+1 must not be purchased even if slots are open.
-			cfg:       domain.PortfolioConfig{MaxStocks: 2, SlackValue: 0},
+			// Both slots are organic → each gets InitialAmountPerStock.
+			cfg:       domain.PortfolioConfig{MaxStocks: 2, SlackValue: 0, InitialAmountPerStock: 10000},
 			positions: nil,
 			rankings: []domain.Rank{
 				{Ticker: "AAPL", Position: 1, Price: 200},
 				{Ticker: "MSFT", Position: 2, Price: 300},
 				{Ticker: "NVDA", Position: 3, Price: 800}, // rank 3 > MaxStocks=2
 			},
-			cash:      10000,
+			cash:      0,
 			wantBuys:  []string{"AAPL", "MSFT"},
 			wantSells: nil,
 		},
@@ -251,14 +258,15 @@ func TestRebalance(t *testing.T) {
 	}
 }
 
-// TestRebalanceShareCalculation verifies the exact share count math.
+// TestRebalanceShareCalculation verifies the exact share count math for organic buys.
 func TestRebalanceShareCalculation(t *testing.T) {
-	cfg := domain.PortfolioConfig{MaxStocks: 1, SlackValue: 0}
+	// Organic slot: InitialAmountPerStock=1000, price=300 → floor(1000/300) = 3.
+	cfg := domain.PortfolioConfig{MaxStocks: 1, SlackValue: 0, InitialAmountPerStock: 1000}
 	rankings := []domain.Rank{
 		{Ticker: "AAPL", Position: 1, Price: 300.0},
 	}
 
-	result := domain.Rebalance(cfg, nil, rankings, 1000.0)
+	result := domain.Rebalance(cfg, nil, rankings, 0)
 
 	if len(result.Buys) != 1 {
 		t.Fatalf("expected 1 buy, got %d", len(result.Buys))

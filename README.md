@@ -8,10 +8,11 @@ You configure everything through GitHub Secrets and Variables — no code change
 
 ## How the strategy works
 
-The rebalancer uses a **slack-based momentum strategy**. You configure two numbers per portfolio:
+The rebalancer uses a **slack-based momentum strategy**. You configure three numbers per portfolio:
 
 - **`MAX_STOCKS`** — target number of holdings (e.g. 5)
 - **`SLACK_VALUE`** — a buffer that prevents unnecessary selling (e.g. 2)
+- **`INITIAL_AMOUNT_PER_STOCK`** — dollar amount to invest per slot when topping up an undersized portfolio (e.g. 5000)
 
 Each week, for every stock you currently hold:
 
@@ -22,16 +23,23 @@ Each week, for every stock you currently hold:
 | Rank > `MAX_STOCKS + SLACK_VALUE` | **Sell** — fallen too far |
 | Not in the rankings at all | **Sell** — no longer in the index |
 
-After selling, the proceeds plus any existing cash are split equally across the open slots and used to **buy the highest-ranked stocks not already held** (only stocks ranked ≤ `MAX_STOCKS` are eligible), until the portfolio is back to `MAX_STOCKS` positions. Share counts are rounded down to whole shares.
+After deciding what to sell, the rebalancer fills open slots by buying the highest-ranked stocks not already held (only stocks ranked ≤ `MAX_STOCKS` are eligible). Buy sizing depends on how the slot was opened:
 
-**Example** — `MAX_STOCKS=5`, `SLACK_VALUE=2` (threshold = 7):
+| Slot type | How it opened | Sizing |
+|---|---|---|
+| **Sell-funded** | Freed by a sell this cycle | Sell proceeds ÷ number of sells |
+| **Organic** | Was already empty (portfolio undersized) | `INITIAL_AMOUNT_PER_STOCK` per slot |
+
+Share counts are always rounded down to whole shares.
+
+**Ongoing rebalance example** — `MAX_STOCKS=5`, `SLACK_VALUE=2` (threshold = 7):
 
 ```
 Index rankings this week          Current portfolio
 ──────────────────────────────    ─────────────────────────────────────────
 Rank 1  AAPL   $195              AAPL  10 shares  @ $195  → held (rank 1 ≤ 5)
 Rank 2  MSFT   $415              MSFT   5 shares  @ $415  → held (rank 2 ≤ 5)
-Rank 3  GOOG   $171              NVDA   8 shares  @ $875  → held (rank 6 ≤ 7, slack)
+Rank 3  GOOG   $171              NVDA   8 shares  @ $875  → held (rank 5 ≤ 5)
 Rank 4  AMZN   $182              TSLA   5 shares  @ $250  → SELL (rank 9 > 7)
 Rank 5  NVDA   $875
 Rank 6  META   $490  ← not eligible (rank 6 > MAX_STOCKS=5, can't buy)
@@ -44,20 +52,34 @@ TSLA:  sell 5 shares × $250 = $1,250 proceeds
 
 Step 2 — Size the buys
 ───────────────────────
-Available cash before sell:   $500
-+ TSLA sell proceeds:       + $1,250
-                            ────────
-Total cash for buying:        $1,750
+1 sell → 1 sell-funded slot.  GOOG (rank 3) gets the full sell proceeds.
+Cash per slot: $1,250 ÷ 1 = $1,250
 
-Open slots: MAX_STOCKS(5) − retained(3) = 2 slots  →  GOOG (rank 3), AMZN (rank 4)
-Cash per slot: $1,750 ÷ 2 = $875
+Open slots: MAX_STOCKS(5) − retained(3) = 2 slots → GOOG (sell-funded), AMZN (organic)
+Organic slot AMZN: INITIAL_AMOUNT_PER_STOCK = $875
 
 Step 3 — Buy
 ─────────────
-GOOG:  floor($875 ÷ $171) = 5 shares
-AMZN:  floor($875 ÷ $182) = 4 shares
+GOOG:  floor($1,250 ÷ $171) = 7 shares   ← sell-funded
+AMZN:  floor($875  ÷ $182) = 4 shares   ← organic (InitialAmountPerStock)
 
 Final portfolio: AAPL, MSFT, NVDA, GOOG, AMZN
+```
+
+**First-run / empty portfolio example** — `MAX_STOCKS=5`, `INITIAL_AMOUNT_PER_STOCK=5000`:
+
+```
+No positions held → all 5 slots are organic.
+
+Buy the top-5 ranked stocks, each sized at $5,000:
+  AAPL (rank 1 @ $195):  floor($5,000 ÷ $195) = 25 shares
+  MSFT (rank 2 @ $415):  floor($5,000 ÷ $415) = 12 shares
+  GOOG (rank 3 @ $171):  floor($5,000 ÷ $171) = 29 shares
+  AMZN (rank 4 @ $182):  floor($5,000 ÷ $182) = 27 shares
+  NVDA (rank 5 @ $875):  floor($5,000 ÷ $875) =  5 shares
+
+Ensure your brokerage account holds at least MAX_STOCKS × INITIAL_AMOUNT_PER_STOCK
+in cash before the first run (5 × $5,000 = $25,000 in this example).
 ```
 
 > **Note:** META is rank 6, which is within the slack zone, but it is **not eligible for buying** — only stocks ranked ≤ `MAX_STOCKS` (≤ 5) can be purchased. The slack zone only protects stocks you *already hold* from being sold prematurely.
@@ -117,6 +139,7 @@ Replace `N` with `1`, `2`, `3`, etc.
 | `PROFILE_N_INDEX` | Index key — one of: `sp500`, `sp400`, `sp600`, `ndx` | `sp500` |
 | `PROFILE_N_MAX_STOCKS` | Target number of holdings | `25` |
 | `PROFILE_N_SLACK_VALUE` | Retention buffer (0 = no slack) | `5` |
+| `PROFILE_N_INITIAL_AMOUNT_PER_STOCK` | Dollar amount per organic buy slot (first run / top-up) | `5000` |
 | `PROFILE_N_TRADIER_SANDBOX` | `true` for paper trading, `false` for live | `false` |
 
 **Example — two profiles:**
@@ -124,17 +147,19 @@ Replace `N` with `1`, `2`, `3`, etc.
 ```
 PROFILE_COUNT           = 2
 
-PROFILE_1_NAME          = SP500 Momentum
-PROFILE_1_INDEX         = sp500
-PROFILE_1_MAX_STOCKS    = 25
-PROFILE_1_SLACK_VALUE   = 5
-PROFILE_1_TRADIER_SANDBOX  = false
+PROFILE_1_NAME                     = SP500 Momentum
+PROFILE_1_INDEX                    = sp500
+PROFILE_1_MAX_STOCKS               = 25
+PROFILE_1_SLACK_VALUE              = 5
+PROFILE_1_INITIAL_AMOUNT_PER_STOCK = 5000
+PROFILE_1_TRADIER_SANDBOX          = false
 
-PROFILE_2_NAME          = NDX Top 10
-PROFILE_2_INDEX         = ndx
-PROFILE_2_MAX_STOCKS    = 10
-PROFILE_2_SLACK_VALUE   = 2
-PROFILE_2_TRADIER_SANDBOX  = false
+PROFILE_2_NAME                     = NDX Top 10
+PROFILE_2_INDEX                    = ndx
+PROFILE_2_MAX_STOCKS               = 10
+PROFILE_2_SLACK_VALUE              = 2
+PROFILE_2_INITIAL_AMOUNT_PER_STOCK = 3000
+PROFILE_2_TRADIER_SANDBOX          = false
 ```
 
 ---
@@ -224,8 +249,14 @@ The rebalancer will never place the same order twice in one run. If a sell or bu
 **Workflow fails with "GitHub Variable PROFILE_1_MAX_STOCKS must be a positive integer"**
 → The value was set as a word (e.g. `twenty-five`). It must be a plain number (e.g. `25`).
 
+**Workflow fails with "GitHub Variable PROFILE_1_INITIAL_AMOUNT_PER_STOCK is not set"**
+→ Go to Variables and add `PROFILE_N_INITIAL_AMOUNT_PER_STOCK` with the dollar amount to invest per position on initial fill (e.g. `5000`). This is required for all profiles.
+
 **Orders are placed but shares = 0 in the logs**
-→ The cash available after sells is less than the price of one share for that stock. Either increase your initial cash balance in Tradier or reduce `MAX_STOCKS` so each position gets a larger allocation.
+→ The allocated amount per slot is less than the price of one share.
+
+- For **sell-funded** slots: sell proceeds ÷ number of sells is too small. Either the sold position had low value or you are selling many stocks at once with little proceeds per slot.
+- For **organic** slots: `PROFILE_N_INITIAL_AMOUNT_PER_STOCK` is lower than the stock price. Increase this value or choose a lower-priced index to target.
 
 **A stock stays in the portfolio even though its rank dropped**
 → This is expected if its rank is still within the slack zone (`rank ≤ MAX_STOCKS + SLACK_VALUE`). Reduce `SLACK_VALUE` if you want faster turnover.
@@ -251,6 +282,7 @@ PROFILE_COUNT=1 \
   PROFILE_1_INDEX=sp500 \
   PROFILE_1_MAX_STOCKS=5 \
   PROFILE_1_SLACK_VALUE=2 \
+  PROFILE_1_INITIAL_AMOUNT_PER_STOCK=5000 \
   PROFILE_1_BROKER_TYPE=mock \
   RANKING_MODE=mock \
   go run ./cmd/rebalancer
@@ -261,6 +293,7 @@ PROFILE_COUNT=1 \
   PROFILE_1_INDEX=sp500 \
   PROFILE_1_MAX_STOCKS=25 \
   PROFILE_1_SLACK_VALUE=5 \
+  PROFILE_1_INITIAL_AMOUNT_PER_STOCK=5000 \
   PROFILE_1_BROKER_TYPE=mock \
   RANKING_API_TOKEN="<your token>" \
   go run ./cmd/rebalancer

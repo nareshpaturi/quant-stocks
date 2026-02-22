@@ -7,11 +7,12 @@ name: Weekly Portfolio Rebalance
 # VARIABLES (non-sensitive, visible in logs):
 #   PROFILE_COUNT             Number of index profiles to run (e.g. "2")
 #
-#   PROFILE_1_NAME            Human label  (e.g. "SP500 Momentum")
-#   PROFILE_1_INDEX           Index key: sp500 | sp400 | sp600 | ndx
-#   PROFILE_1_MAX_STOCKS      Target portfolio size (e.g. "25")
-#   PROFILE_1_SLACK_VALUE     Retention buffer     (e.g. "5")
-#   PROFILE_1_TRADIER_SANDBOX "true" for paper trading, "false" for live
+#   PROFILE_1_NAME                  Human label  (e.g. "SP500 Momentum")
+#   PROFILE_1_INDEX                 Index key: sp500 | sp400 | sp600 | ndx
+#   PROFILE_1_MAX_STOCKS            Target portfolio size (e.g. "25")
+#   PROFILE_1_SLACK_VALUE           Retention buffer     (e.g. "5")
+#   PROFILE_1_INITIAL_AMOUNT_PER_STOCK  Dollar amount per organic buy slot (e.g. "5000")
+#   PROFILE_1_TRADIER_SANDBOX       "true" for paper trading, "false" for live
 #
 #   Repeat PROFILE_2_*, PROFILE_3_*, ... up to PROFILE_5_* as needed.
 #
@@ -50,49 +51,54 @@ jobs:
       PROFILE_COUNT: ${{ vars.PROFILE_COUNT }}
 
       # ── Profile 1 ───────────────────────────────────────────────────────────
-      PROFILE_1_NAME:              ${{ vars.PROFILE_1_NAME }}
-      PROFILE_1_INDEX:             ${{ vars.PROFILE_1_INDEX }}
-      PROFILE_1_MAX_STOCKS:        ${{ vars.PROFILE_1_MAX_STOCKS }}
-      PROFILE_1_SLACK_VALUE:       ${{ vars.PROFILE_1_SLACK_VALUE }}
-      PROFILE_1_TRADIER_SANDBOX:   ${{ vars.PROFILE_1_TRADIER_SANDBOX }}
-      PROFILE_1_TRADIER_TOKEN:     ${{ secrets.PROFILE_1_TRADIER_TOKEN }}
-      PROFILE_1_TRADIER_ACCOUNT_ID: ${{ secrets.PROFILE_1_TRADIER_ACCOUNT_ID }}
+      PROFILE_1_NAME:                    ${{ vars.PROFILE_1_NAME }}
+      PROFILE_1_INDEX:                   ${{ vars.PROFILE_1_INDEX }}
+      PROFILE_1_MAX_STOCKS:              ${{ vars.PROFILE_1_MAX_STOCKS }}
+      PROFILE_1_SLACK_VALUE:             ${{ vars.PROFILE_1_SLACK_VALUE }}
+      PROFILE_1_INITIAL_AMOUNT_PER_STOCK: ${{ vars.PROFILE_1_INITIAL_AMOUNT_PER_STOCK }}
+      PROFILE_1_TRADIER_SANDBOX:         ${{ vars.PROFILE_1_TRADIER_SANDBOX }}
+      PROFILE_1_TRADIER_TOKEN:           ${{ secrets.PROFILE_1_TRADIER_TOKEN }}
+      PROFILE_1_TRADIER_ACCOUNT_ID:      ${{ secrets.PROFILE_1_TRADIER_ACCOUNT_ID }}
 
       # ── Profile 2 ───────────────────────────────────────────────────────────
-      PROFILE_2_NAME:              ${{ vars.PROFILE_2_NAME }}
-      PROFILE_2_INDEX:             ${{ vars.PROFILE_2_INDEX }}
-      PROFILE_2_MAX_STOCKS:        ${{ vars.PROFILE_2_MAX_STOCKS }}
-      PROFILE_2_SLACK_VALUE:       ${{ vars.PROFILE_2_SLACK_VALUE }}
-      PROFILE_2_TRADIER_SANDBOX:   ${{ vars.PROFILE_2_TRADIER_SANDBOX }}
-      PROFILE_2_TRADIER_TOKEN:     ${{ secrets.PROFILE_2_TRADIER_TOKEN }}
-      PROFILE_2_TRADIER_ACCOUNT_ID: ${{ secrets.PROFILE_2_TRADIER_ACCOUNT_ID }}
+      PROFILE_2_NAME:                    ${{ vars.PROFILE_2_NAME }}
+      PROFILE_2_INDEX:                   ${{ vars.PROFILE_2_INDEX }}
+      PROFILE_2_MAX_STOCKS:              ${{ vars.PROFILE_2_MAX_STOCKS }}
+      PROFILE_2_SLACK_VALUE:             ${{ vars.PROFILE_2_SLACK_VALUE }}
+      PROFILE_2_INITIAL_AMOUNT_PER_STOCK: ${{ vars.PROFILE_2_INITIAL_AMOUNT_PER_STOCK }}
+      PROFILE_2_TRADIER_SANDBOX:         ${{ vars.PROFILE_2_TRADIER_SANDBOX }}
+      PROFILE_2_TRADIER_TOKEN:           ${{ secrets.PROFILE_2_TRADIER_TOKEN }}
+      PROFILE_2_TRADIER_ACCOUNT_ID:      ${{ secrets.PROFILE_2_TRADIER_ACCOUNT_ID }}
 
       # ── Profile 3 ───────────────────────────────────────────────────────────
-      PROFILE_3_NAME:              ${{ vars.PROFILE_3_NAME }}
-      PROFILE_3_INDEX:             ${{ vars.PROFILE_3_INDEX }}
-      PROFILE_3_MAX_STOCKS:        ${{ vars.PROFILE_3_MAX_STOCKS }}
-      PROFILE_3_SLACK_VALUE:       ${{ vars.PROFILE_3_SLACK_VALUE }}
-      PROFILE_3_TRADIER_SANDBOX:   ${{ vars.PROFILE_3_TRADIER_SANDBOX }}
-      PROFILE_3_TRADIER_TOKEN:     ${{ secrets.PROFILE_3_TRADIER_TOKEN }}
-      PROFILE_3_TRADIER_ACCOUNT_ID: ${{ secrets.PROFILE_3_TRADIER_ACCOUNT_ID }}
+      PROFILE_3_NAME:                    ${{ vars.PROFILE_3_NAME }}
+      PROFILE_3_INDEX:                   ${{ vars.PROFILE_3_INDEX }}
+      PROFILE_3_MAX_STOCKS:              ${{ vars.PROFILE_3_MAX_STOCKS }}
+      PROFILE_3_SLACK_VALUE:             ${{ vars.PROFILE_3_SLACK_VALUE }}
+      PROFILE_3_INITIAL_AMOUNT_PER_STOCK: ${{ vars.PROFILE_3_INITIAL_AMOUNT_PER_STOCK }}
+      PROFILE_3_TRADIER_SANDBOX:         ${{ vars.PROFILE_3_TRADIER_SANDBOX }}
+      PROFILE_3_TRADIER_TOKEN:           ${{ secrets.PROFILE_3_TRADIER_TOKEN }}
+      PROFILE_3_TRADIER_ACCOUNT_ID:      ${{ secrets.PROFILE_3_TRADIER_ACCOUNT_ID }}
 
       # ── Profile 4 ───────────────────────────────────────────────────────────
-      PROFILE_4_NAME:              ${{ vars.PROFILE_4_NAME }}
-      PROFILE_4_INDEX:             ${{ vars.PROFILE_4_INDEX }}
-      PROFILE_4_MAX_STOCKS:        ${{ vars.PROFILE_4_MAX_STOCKS }}
-      PROFILE_4_SLACK_VALUE:       ${{ vars.PROFILE_4_SLACK_VALUE }}
-      PROFILE_4_TRADIER_SANDBOX:   ${{ vars.PROFILE_4_TRADIER_SANDBOX }}
-      PROFILE_4_TRADIER_TOKEN:     ${{ secrets.PROFILE_4_TRADIER_TOKEN }}
-      PROFILE_4_TRADIER_ACCOUNT_ID: ${{ secrets.PROFILE_4_TRADIER_ACCOUNT_ID }}
+      PROFILE_4_NAME:                    ${{ vars.PROFILE_4_NAME }}
+      PROFILE_4_INDEX:                   ${{ vars.PROFILE_4_INDEX }}
+      PROFILE_4_MAX_STOCKS:              ${{ vars.PROFILE_4_MAX_STOCKS }}
+      PROFILE_4_SLACK_VALUE:             ${{ vars.PROFILE_4_SLACK_VALUE }}
+      PROFILE_4_INITIAL_AMOUNT_PER_STOCK: ${{ vars.PROFILE_4_INITIAL_AMOUNT_PER_STOCK }}
+      PROFILE_4_TRADIER_SANDBOX:         ${{ vars.PROFILE_4_TRADIER_SANDBOX }}
+      PROFILE_4_TRADIER_TOKEN:           ${{ secrets.PROFILE_4_TRADIER_TOKEN }}
+      PROFILE_4_TRADIER_ACCOUNT_ID:      ${{ secrets.PROFILE_4_TRADIER_ACCOUNT_ID }}
 
       # ── Profile 5 ───────────────────────────────────────────────────────────
-      PROFILE_5_NAME:              ${{ vars.PROFILE_5_NAME }}
-      PROFILE_5_INDEX:             ${{ vars.PROFILE_5_INDEX }}
-      PROFILE_5_MAX_STOCKS:        ${{ vars.PROFILE_5_MAX_STOCKS }}
-      PROFILE_5_SLACK_VALUE:       ${{ vars.PROFILE_5_SLACK_VALUE }}
-      PROFILE_5_TRADIER_SANDBOX:   ${{ vars.PROFILE_5_TRADIER_SANDBOX }}
-      PROFILE_5_TRADIER_TOKEN:     ${{ secrets.PROFILE_5_TRADIER_TOKEN }}
-      PROFILE_5_TRADIER_ACCOUNT_ID: ${{ secrets.PROFILE_5_TRADIER_ACCOUNT_ID }}
+      PROFILE_5_NAME:                    ${{ vars.PROFILE_5_NAME }}
+      PROFILE_5_INDEX:                   ${{ vars.PROFILE_5_INDEX }}
+      PROFILE_5_MAX_STOCKS:              ${{ vars.PROFILE_5_MAX_STOCKS }}
+      PROFILE_5_SLACK_VALUE:             ${{ vars.PROFILE_5_SLACK_VALUE }}
+      PROFILE_5_INITIAL_AMOUNT_PER_STOCK: ${{ vars.PROFILE_5_INITIAL_AMOUNT_PER_STOCK }}
+      PROFILE_5_TRADIER_SANDBOX:         ${{ vars.PROFILE_5_TRADIER_SANDBOX }}
+      PROFILE_5_TRADIER_TOKEN:           ${{ secrets.PROFILE_5_TRADIER_TOKEN }}
+      PROFILE_5_TRADIER_ACCOUNT_ID:      ${{ secrets.PROFILE_5_TRADIER_ACCOUNT_ID }}
 
     steps:
       - name: Checkout repository

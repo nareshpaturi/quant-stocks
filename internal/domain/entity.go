@@ -6,10 +6,17 @@ package domain
 //   - MaxStocks: N, the target number of holdings.
 //   - SlackValue: S, how many extra ranks a held stock tolerates before forced sale.
 //     A held stock at rank R is kept if R <= N+S; sold if R > N+S.
+//   - InitialAmountPerStock: dollar amount allocated per organic buy slot.
+//     An "organic" slot is one that was already empty before this rebalance cycle
+//     (i.e. not freed by a sell this run). This applies when the portfolio is
+//     empty or has fewer than MaxStocks positions.
+//     Must be > 0; config.Validate enforces this so the service never calls
+//     Rebalance with a zero value when organic slots are expected.
 type PortfolioConfig struct {
-	IndexName  string
-	MaxStocks  int
-	SlackValue int
+	IndexName            string
+	MaxStocks            int
+	SlackValue           int
+	InitialAmountPerStock float64
 }
 
 // Position represents a currently held stock in the brokerage account.

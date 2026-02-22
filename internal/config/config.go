@@ -52,6 +52,11 @@ type ProfileConfig struct {
 	// A held stock at rank R is kept if R <= N+S, sold if R > N+S.
 	SlackValue int
 
+	// InitialAmountPerStock is the dollar amount allocated per organic buy slot.
+	// Required — must be > 0. Organic slots arise when the portfolio has fewer
+	// than MaxStocks positions (e.g. on first run or after an unexpected sell).
+	InitialAmountPerStock float64
+
 	Broker BrokerConfig
 }
 
@@ -117,12 +122,17 @@ func loadProfile(n int) (ProfileConfig, error) {
 	if err != nil {
 		return ProfileConfig{}, err
 	}
+	initialAmount, err := requireEnvPositiveFloat(pfx+"INITIAL_AMOUNT_PER_STOCK", n)
+	if err != nil {
+		return ProfileConfig{}, err
+	}
 
 	return ProfileConfig{
-		Name:       os.Getenv(pfx + "NAME"),
-		Index:      os.Getenv(pfx + "INDEX"),
-		MaxStocks:  maxStocks,
-		SlackValue: slackValue,
+		Name:                  os.Getenv(pfx + "NAME"),
+		Index:                 os.Getenv(pfx + "INDEX"),
+		MaxStocks:             maxStocks,
+		SlackValue:            slackValue,
+		InitialAmountPerStock: initialAmount,
 		Broker: BrokerConfig{
 			Type:      envOrDefault(pfx+"BROKER_TYPE", "tradier"),
 			Token:     os.Getenv(pfx + "TRADIER_TOKEN"),
@@ -210,4 +220,16 @@ func envOrDefault(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func requireEnvPositiveFloat(key string, profileN int) (float64, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return 0, fmt.Errorf("GitHub Variable %s is not set (profile %d)", key, profileN)
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || f <= 0 {
+		return 0, fmt.Errorf("GitHub Variable %s must be a positive number, got %q", key, v)
+	}
+	return f, nil
 }
