@@ -1,0 +1,227 @@
+// Package config loads the multi-profile configuration from environment variables.
+//
+// Users who fork this repo never edit code. They configure their portfolios
+// entirely through GitHub Secrets and Variables:
+//
+//	GitHub Variables  (Settings → Secrets and Variables → Actions → Variables)
+//	  PROFILE_COUNT            how many profiles to run (e.g. "3")
+//	  PROFILE_1_NAME           human label  (e.g. "SP500 Momentum")
+//	  PROFILE_1_INDEX          index key    (e.g. "sp500")
+//	  PROFILE_1_MAX_STOCKS     target size  (e.g. "25")
+//	  PROFILE_1_SLACK_VALUE    retention buffer (e.g. "5")
+//	  PROFILE_1_RANKING_CSV_FILE  path to rankings CSV (e.g. "rankings/sp500.csv")
+//	  PROFILE_1_TRADIER_SANDBOX   "true" for sandbox, "false" for live
+//	  ... repeat for PROFILE_2_, PROFILE_3_, etc.
+//
+//	GitHub Secrets  (Settings → Secrets and Variables → Actions → Secrets)
+//	  PROFILE_1_TRADIER_TOKEN       Tradier Bearer token
+//	  PROFILE_1_TRADIER_ACCOUNT_ID  Tradier account number
+//	  ... repeat for PROFILE_2_, PROFILE_3_, etc.
+package config
+
+import (
+	"fmt"
+	"os"
+	"strconv"
+)
+
+// Config is the root configuration holding all profiles.
+type Config struct {
+	Profiles []ProfileConfig
+}
+
+// ProfileConfig defines one independent rebalancing portfolio.
+// Each profile tracks a distinct index with its own broker account and strategy.
+type ProfileConfig struct {
+	// Name is a human-readable label used in log output (e.g. "SP500 Momentum").
+	Name string
+
+	// Index identifies which leaderboard to fetch (e.g. "sp500", "ndx", "sp400").
+	// Passed to RankingProvider.GetRankings.
+	Index string
+
+	// MaxStocks (N): target portfolio size.
+	MaxStocks int
+
+	// SlackValue (S): retention buffer.
+	// A held stock at rank R is kept if R <= N+S, sold if R > N+S.
+	SlackValue int
+
+	Broker  BrokerConfig
+	Ranking RankingConfig
+}
+
+// BrokerConfig specifies which broker adapter to use and its credentials.
+type BrokerConfig struct {
+	// Type selects the adapter: "tradier" (default) or "mock".
+	Type string
+
+	// Token is the Tradier Bearer token (from GitHub Secret).
+	Token string
+
+	// AccountID is the Tradier account number (from GitHub Secret).
+	AccountID string
+
+	// Sandbox routes to sandbox.tradier.com when true.
+	Sandbox bool
+}
+
+// RankingConfig specifies which ranking provider to use.
+type RankingConfig struct {
+	// Type selects the adapter: "csv" (default) or "mock".
+	Type string
+
+	// File is the path to the CSV rankings file (required when Type="csv").
+	// Format per row: ticker,rank,price
+	File string
+}
+
+// LoadFromEnv reads all profile configuration from environment variables.
+// Reads PROFILE_COUNT to determine how many profiles to load, then reads
+// PROFILE_N_* variables for each profile N from 1 to PROFILE_COUNT.
+func LoadFromEnv() (*Config, error) {
+	countStr := os.Getenv("PROFILE_COUNT")
+	if countStr == "" {
+		return nil, fmt.Errorf(
+			"GitHub Variable PROFILE_COUNT is not set — " +
+				"set it to the number of index profiles you want to run (e.g. \"2\")",
+		)
+	}
+	count, err := strconv.Atoi(countStr)
+	if err != nil || count <= 0 {
+		return nil, fmt.Errorf(
+			"GitHub Variable PROFILE_COUNT must be a positive integer, got %q", countStr,
+		)
+	}
+
+	profiles := make([]ProfileConfig, 0, count)
+	for i := 1; i <= count; i++ {
+		p, err := loadProfile(i)
+		if err != nil {
+			return nil, err
+		}
+		profiles = append(profiles, p)
+	}
+
+	return &Config{Profiles: profiles}, nil
+}
+
+// loadProfile reads one profile from the PROFILE_N_* env vars.
+func loadProfile(n int) (ProfileConfig, error) {
+	pfx := fmt.Sprintf("PROFILE_%d_", n)
+
+	maxStocks, err := requireEnvInt(pfx+"MAX_STOCKS", n)
+	if err != nil {
+		return ProfileConfig{}, err
+	}
+	slackValue, err := requireEnvInt(pfx+"SLACK_VALUE", n)
+	if err != nil {
+		return ProfileConfig{}, err
+	}
+
+	return ProfileConfig{
+		Name:       os.Getenv(pfx + "NAME"),
+		Index:      os.Getenv(pfx + "INDEX"),
+		MaxStocks:  maxStocks,
+		SlackValue: slackValue,
+		Broker: BrokerConfig{
+			Type:      envOrDefault(pfx+"BROKER_TYPE", "tradier"),
+			Token:     os.Getenv(pfx + "TRADIER_TOKEN"),
+			AccountID: os.Getenv(pfx + "TRADIER_ACCOUNT_ID"),
+			Sandbox:   os.Getenv(pfx+"TRADIER_SANDBOX") == "true",
+		},
+		Ranking: RankingConfig{
+			Type: envOrDefault(pfx+"RANKING_TYPE", "csv"),
+			File: os.Getenv(pfx + "RANKING_CSV_FILE"),
+		},
+	}, nil
+}
+
+// Validate checks that every profile has all required fields set.
+// Returns a clear, actionable error message pointing to the missing variable.
+func (c *Config) Validate() error {
+	if len(c.Profiles) == 0 {
+		return fmt.Errorf("no profiles loaded — check PROFILE_COUNT")
+	}
+
+	seen := make(map[string]bool, len(c.Profiles))
+	for i, p := range c.Profiles {
+		n := i + 1 // 1-indexed for the error message
+		pfx := fmt.Sprintf("PROFILE_%d_", n)
+
+		if p.Name == "" {
+			return fmt.Errorf("GitHub Variable %sNAME is not set", pfx)
+		}
+		if seen[p.Name] {
+			return fmt.Errorf("profile %d: duplicate name %q", n, p.Name)
+		}
+		seen[p.Name] = true
+
+		if p.Index == "" {
+			return fmt.Errorf("GitHub Variable %sINDEX is not set (profile %q)", pfx, p.Name)
+		}
+		if p.MaxStocks <= 0 {
+			return fmt.Errorf("GitHub Variable %sMAX_STOCKS must be > 0 (profile %q)", pfx, p.Name)
+		}
+		if p.SlackValue < 0 {
+			return fmt.Errorf("GitHub Variable %sSLACK_VALUE must be >= 0 (profile %q)", pfx, p.Name)
+		}
+
+		switch p.Broker.Type {
+		case "tradier":
+			if p.Broker.Token == "" {
+				return fmt.Errorf(
+					"GitHub Secret %sTRADIER_TOKEN is not set (profile %q)", pfx, p.Name,
+				)
+			}
+			if p.Broker.AccountID == "" {
+				return fmt.Errorf(
+					"GitHub Secret %sTRADIER_ACCOUNT_ID is not set (profile %q)", pfx, p.Name,
+				)
+			}
+		case "mock":
+			// no credentials required
+		default:
+			return fmt.Errorf(
+				"GitHub Variable %sBROKER_TYPE is %q — must be \"tradier\" or \"mock\" (profile %q)",
+				pfx, p.Broker.Type, p.Name,
+			)
+		}
+
+		switch p.Ranking.Type {
+		case "csv":
+			if p.Ranking.File == "" {
+				return fmt.Errorf(
+					"GitHub Variable %sRANKING_CSV_FILE is not set (profile %q)", pfx, p.Name,
+				)
+			}
+		case "mock":
+			// no file required
+		default:
+			return fmt.Errorf(
+				"GitHub Variable %sRANKING_TYPE is %q — must be \"csv\" or \"mock\" (profile %q)",
+				pfx, p.Ranking.Type, p.Name,
+			)
+		}
+	}
+	return nil
+}
+
+func requireEnvInt(key string, profileN int) (int, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return 0, fmt.Errorf("GitHub Variable %s is not set (profile %d)", key, profileN)
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("GitHub Variable %s must be an integer, got %q", key, v)
+	}
+	return n, nil
+}
+
+func envOrDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}

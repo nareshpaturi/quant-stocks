@@ -1,0 +1,24 @@
+# Build output
+rebalancer
+
+# Go toolchain
+*.test
+*.out
+vendor/
+
+# Environment / secrets — never commit these
+.env
+.env.*
+*.env
+
+# Rankings CSVs with real data (commit your own copies in rankings/)
+# Uncomment if you prefer to gitignore them and generate them in CI instead:
+# rankings/*.csv
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
