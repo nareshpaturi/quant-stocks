@@ -10,8 +10,8 @@ You configure everything through GitHub Secrets and Variables — no code change
 
 The rebalancer uses a **slack-based momentum strategy**. You configure two numbers per portfolio:
 
-- **`MAX_STOCKS`** — target number of holdings (e.g. 25)
-- **`SLACK_VALUE`** — a buffer that prevents unnecessary selling (e.g. 5)
+- **`MAX_STOCKS`** — target number of holdings (e.g. 5)
+- **`SLACK_VALUE`** — a buffer that prevents unnecessary selling (e.g. 2)
 
 Each week, for every stock you currently hold:
 
@@ -121,17 +121,7 @@ PROFILE_2_TRADIER_SANDBOX  = false
 
 Go to **Settings → Secrets and Variables → Actions → Secrets → New repository secret**.
 
-These are encrypted and never shown in logs.
-
-#### Required — one shared secret for rankings
-
-| Secret | Description |
-|---|---|
-| `RANKING_API_TOKEN` | Your QuantMyStocks API Bearer token |
-
-Get your token from your QuantMyStocks account dashboard.
-
-#### Required per profile — Tradier credentials
+These are your Tradier credentials. They are encrypted and never shown in logs.
 
 | Secret | Description |
 |---|---|
@@ -141,8 +131,6 @@ Get your token from your QuantMyStocks account dashboard.
 **Example — two profiles:**
 
 ```
-RANKING_API_TOKEN             = <your QuantMyStocks API token>
-
 PROFILE_1_TRADIER_TOKEN       = <your SP500 account token>
 PROFILE_1_TRADIER_ACCOUNT_ID  = <your SP500 account number>
 
@@ -267,7 +255,10 @@ quant-stocks/
 │       │   ├── tradier_broker.go       # Tradier REST API adapter
 │       │   └── mock_broker.go          # In-memory mock for testing
 │       └── ranking/
-│           ├── quantmystocks.go        # QuantMyStocks leaderboard API adapter
+│           ├── static_ranking.go       # CSV file ranking provider
 │           └── mock_ranking.go         # Hardcoded mock for testing
+├── rankings/                           # Commit your CSV rankings files here
+│   ├── sp500.csv
+│   └── ndx.csv
 └── .github/workflows/weekly-rebalance.yml
 ```
