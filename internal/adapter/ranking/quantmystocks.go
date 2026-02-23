@@ -71,7 +71,7 @@ func NewQuantMyStocksProvider(apiURL, token string) *QuantMyStocksProvider {
 // GetRankings calls the QuantMyStocks API for the given index using the most
 // recent trading day. indexName must be one of: "sp500", "sp400", "sp600", "ndx".
 func (q *QuantMyStocksProvider) GetRankings(ctx context.Context, indexName string) ([]domain.Rank, error) {
-	return q.GetRankingsForDate(ctx, indexName, lastTradingDay())
+	return q.GetRankingsForDate(ctx, indexName, lastRankingDay())
 }
 
 // GetRankingsForDate calls the QuantMyStocks API for the given index and date.
@@ -133,18 +133,14 @@ func (q *QuantMyStocksProvider) GetRankingsForDate(ctx context.Context, indexNam
 	return ranks, nil
 }
 
-// lastTradingDay returns the most recent weekday date as "YYYY-MM-DD".
-// When the Action runs on Monday, this returns the prior Friday so the
-// rankings reflect Friday's market close — the latest settled data.
-func lastTradingDay() string {
+// lastRankingDay returns the most recent Sunday date as "YYYY-MM-DD".
+// The QuantMyStocks leaderboard is published every Sunday, so this is the
+// date to pass as momDay to retrieve the current week's rankings.
+// When the Action runs on Monday, this returns yesterday (Sunday).
+func lastRankingDay() string {
 	t := time.Now().UTC()
-	switch t.Weekday() {
-	case time.Monday:
-		t = t.AddDate(0, 0, -3) // Monday → Friday
-	case time.Sunday:
-		t = t.AddDate(0, 0, -2) // Sunday → Friday
-	case time.Saturday:
-		t = t.AddDate(0, 0, -1) // Saturday → Friday
-	}
+	// time.Weekday: Sunday=0, Monday=1, ..., Saturday=6
+	// Subtracting the weekday number always lands on the most recent Sunday.
+	t = t.AddDate(0, 0, -int(t.Weekday()))
 	return t.Format("2006-01-02")
 }

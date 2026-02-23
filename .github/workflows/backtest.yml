@@ -6,28 +6,31 @@ name: Paper Trading Backtest
 # Fill in the inputs, click Run, and watch the job log for per-week details.
 # A formatted summary is printed at the end of the "Run backtest" step.
 #
-# Requirements (in addition to the normal PROFILE_1_* variables):
+# This workflow reads all configuration from the BACKTEST GitHub Environment.
+# Go to Settings → Environments → New environment → name it "BACKTEST", then
+# add the variables and secrets below inside that environment.
 #
-#   SECRETS — add these under Settings → Secrets and Variables → Actions → Secrets:
-#     BACKTEST_TRADIER_TOKEN       Tradier Bearer token for your SANDBOX account
-#     BACKTEST_TRADIER_ACCOUNT_ID  Tradier account number for your SANDBOX account
+# VARIABLES — add under BACKTEST environment:
+#   PROFILE_1_NAME, PROFILE_1_INDEX, PROFILE_1_MAX_STOCKS,
+#   PROFILE_1_SLACK_VALUE, PROFILE_1_INITIAL_AMOUNT_PER_STOCK
 #
-#   These are separate from PROFILE_1_TRADIER_TOKEN so your live and paper
-#   accounts can coexist without any variable changes.
+# SECRETS — add under BACKTEST environment:
+#   RANKING_API_TOKEN             QuantMyStocks API Bearer token
+#   PROFILE_1_TRADIER_TOKEN       Tradier Bearer token for your SANDBOX account
+#   PROFILE_1_TRADIER_ACCOUNT_ID  Tradier account number for your SANDBOX account
 #
-# Strategy parameters (MAX_STOCKS, SLACK_VALUE, etc.) are read from the
-# same PROFILE_1_* GitHub Variables used by the weekly rebalance job,
-# so no duplication is needed.
+# The same variable names are used as in PROD, but the BACKTEST environment
+# holds sandbox credentials so the two environments never interfere.
 #
-# The backtest ALWAYS runs against the Tradier sandbox — it refuses to
-# start if it detects a live account. Market must be open at trigger time.
+# The binary automatically routes to sandbox.tradier.com in backtest mode.
+# Market must be open at trigger time for paper orders to execute.
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
   workflow_dispatch:
     inputs:
       weeks:
-        description: "Number of past Fridays to simulate (e.g. 12 = ~3 months)"
+        description: "Number of past Sundays to simulate (e.g. 12 = ~3 months)"
         required: true
         default: "12"
       delay_seconds:
@@ -46,6 +49,7 @@ jobs:
     # GitHub Actions cap is 360 minutes; this supports up to ~150 weeks at
     # the default 120 s delay before the job times out.
     timeout-minutes: 360
+    environment: BACKTEST
 
     env:
       # ── Backtest control ─────────────────────────────────────────────────────
@@ -53,22 +57,19 @@ jobs:
       BACKTEST_WEEKS: ${{ inputs.weeks }}
       BACKTEST_DELAY_SECONDS: ${{ inputs.delay_seconds }}
 
-      # ── Rankings API (shared with the weekly rebalance) ──────────────────────
+      # ── All config read from the BACKTEST environment ─────────────────────────
       RANKING_API_TOKEN: ${{ secrets.RANKING_API_TOKEN }}
 
-      # ── Single-profile config (strategy params from existing GitHub Variables) ─
       PROFILE_COUNT: "1"
       PROFILE_1_NAME:                    ${{ vars.PROFILE_1_NAME }}
       PROFILE_1_INDEX:                   ${{ vars.PROFILE_1_INDEX }}
       PROFILE_1_MAX_STOCKS:              ${{ vars.PROFILE_1_MAX_STOCKS }}
       PROFILE_1_SLACK_VALUE:             ${{ vars.PROFILE_1_SLACK_VALUE }}
       PROFILE_1_INITIAL_AMOUNT_PER_STOCK: ${{ vars.PROFILE_1_INITIAL_AMOUNT_PER_STOCK }}
-
-      # ── Paper trading credentials (sandbox-only secrets) ─────────────────────
-      # Use your Tradier SANDBOX account here — not your live account.
-      # The binary automatically routes to sandbox.tradier.com in backtest mode.
-      PROFILE_1_TRADIER_TOKEN:           ${{ secrets.BACKTEST_TRADIER_TOKEN }}
-      PROFILE_1_TRADIER_ACCOUNT_ID:      ${{ secrets.BACKTEST_TRADIER_ACCOUNT_ID }}
+      # Sandbox Tradier credentials — stored in the BACKTEST environment,
+      # not PROD, so live and paper accounts are fully isolated.
+      PROFILE_1_TRADIER_TOKEN:           ${{ secrets.PROFILE_1_TRADIER_TOKEN }}
+      PROFILE_1_TRADIER_ACCOUNT_ID:      ${{ secrets.PROFILE_1_TRADIER_ACCOUNT_ID }}
 
     steps:
       - name: Checkout repository

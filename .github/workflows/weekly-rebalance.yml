@@ -2,9 +2,11 @@ name: Weekly Portfolio Rebalance
 
 # ── How to configure this workflow after forking ──────────────────────────────
 #
-# Go to your fork → Settings → Secrets and Variables → Actions
+# This workflow reads all configuration from the PROD GitHub Environment.
+# Go to your fork → Settings → Environments → New environment → name it "PROD"
+# then add the variables and secrets listed below inside that environment.
 #
-# VARIABLES (non-sensitive, visible in logs):
+# VARIABLES (non-sensitive, visible in logs) — add under PROD environment:
 #   PROFILE_COUNT             Number of index profiles to run (e.g. "2")
 #
 #   PROFILE_1_NAME                  Human label  (e.g. "SP500 Momentum")
@@ -15,11 +17,11 @@ name: Weekly Portfolio Rebalance
 #
 #   Repeat PROFILE_2_*, PROFILE_3_*, ... up to PROFILE_5_* as needed.
 #
-# SECRETS (sensitive, never shown in logs):
+# SECRETS (sensitive, never shown in logs) — add under PROD environment:
 #   RANKING_API_TOKEN             QuantMyStocks API Bearer token (shared by all profiles)
 #
-#   PROFILE_1_TRADIER_TOKEN       Tradier Bearer token for profile 1
-#   PROFILE_1_TRADIER_ACCOUNT_ID  Tradier account number for profile 1
+#   PROFILE_1_TRADIER_TOKEN       Tradier Bearer token for profile 1  (live account)
+#   PROFILE_1_TRADIER_ACCOUNT_ID  Tradier account number for profile 1 (live account)
 #
 #   Repeat PROFILE_2_*, PROFILE_3_*, ... up to PROFILE_5_* as needed.
 #
@@ -41,6 +43,7 @@ jobs:
     name: Rebalance all profiles
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment: PROD
 
     env:
       # ── Rankings API (shared across all profiles) ────────────────────────────

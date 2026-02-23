@@ -85,7 +85,7 @@ func (b *BacktestRunner) Run(
 	}
 
 	// 3. Compute the weekly date sequence.
-	dates := pastFridays(weeks)
+	dates := pastSundays(weeks)
 	b.logger.Info("backtest: starting run", "weeks", weeks, "firstDate", dates[0], "lastDate", dates[len(dates)-1])
 
 	records := make([]weekRecord, 0, len(dates))
@@ -288,39 +288,21 @@ func (b *BacktestRunner) printSummary(records []weekRecord) {
 	fmt.Printf("%s\n\n", "════════════════════════════════════════════════════════════════")
 }
 
-// pastFridays returns a slice of date strings (YYYY-MM-DD) for the last
-// `weeksBack` Fridays, ordered from oldest to most recent.
-//
-// If today is a Friday, today's date is the most recent entry.
-// Otherwise, the most recent past Friday is used.
-func pastFridays(weeksBack int) []string {
+// pastSundays returns a slice of date strings (YYYY-MM-DD) for the last
+// `weeksBack` Sundays, ordered from oldest to most recent.
+// The QuantMyStocks leaderboard is published every Sunday, so these dates
+// are passed as momDay when fetching historical rankings for each week.
+func pastSundays(weeksBack int) []string {
 	now := time.Now().UTC()
 
-	// Number of days to roll back to reach the most recent Friday.
-	var daysBack int
-	switch now.Weekday() {
-	case time.Friday:
-		daysBack = 0
-	case time.Saturday:
-		daysBack = 1
-	case time.Sunday:
-		daysBack = 2
-	case time.Monday:
-		daysBack = 3
-	case time.Tuesday:
-		daysBack = 4
-	case time.Wednesday:
-		daysBack = 5
-	case time.Thursday:
-		daysBack = 6
-	}
-
-	mostRecentFriday := now.AddDate(0, 0, -daysBack)
-	startFriday := mostRecentFriday.AddDate(0, 0, -(weeksBack-1)*7)
+	// time.Weekday: Sunday=0, Monday=1, ..., Saturday=6.
+	// Subtracting the weekday number always lands on the most recent Sunday.
+	mostRecentSunday := now.AddDate(0, 0, -int(now.Weekday()))
+	startSunday := mostRecentSunday.AddDate(0, 0, -(weeksBack-1)*7)
 
 	dates := make([]string, weeksBack)
 	for i := 0; i < weeksBack; i++ {
-		dates[i] = startFriday.AddDate(0, 0, i*7).Format("2006-01-02")
+		dates[i] = startSunday.AddDate(0, 0, i*7).Format("2006-01-02")
 	}
 	return dates
 }
