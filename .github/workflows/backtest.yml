@@ -19,6 +19,15 @@ name: Paper Trading Backtest
 #   PROFILE_1_TRADIER_TOKEN       Tradier Bearer token for your SANDBOX account
 #   PROFILE_1_TRADIER_ACCOUNT_ID  Tradier account number for your SANDBOX account
 #
+# ── Email notifications (optional) ────────────────────────────────────────────
+# Add these secrets to the BACKTEST environment to receive the summary by email.
+# If any of these are absent the email step is simply skipped.
+#
+#   SMTP_SERVER     SMTP host, e.g. smtp.gmail.com
+#   SMTP_USERNAME   Login address, e.g. you@gmail.com
+#   SMTP_PASSWORD   App password (Gmail: Account → Security → App passwords)
+#   NOTIFY_EMAIL    Recipient address, e.g. you@gmail.com
+#
 # The same variable names are used as in PROD, but the BACKTEST environment
 # holds sandbox credentials so the two environments never interfere.
 #
@@ -64,6 +73,12 @@ jobs:
       # ── All config read from the BACKTEST environment ─────────────────────────
       RANKING_API_TOKEN: ${{ secrets.RANKING_API_TOKEN }}
 
+      # ── Email notifications (optional — skip step if secrets are absent) ─────
+      SMTP_SERVER:    ${{ secrets.SMTP_SERVER }}
+      SMTP_USERNAME:  ${{ secrets.SMTP_USERNAME }}
+      SMTP_PASSWORD:  ${{ secrets.SMTP_PASSWORD }}
+      NOTIFY_EMAIL:   ${{ secrets.NOTIFY_EMAIL }}
+
       PROFILE_COUNT: "1"
       PROFILE_1_NAME:                    ${{ vars.PROFILE_1_NAME }}
       PROFILE_1_INDEX:                   ${{ inputs.index || vars.PROFILE_1_INDEX }}
@@ -93,4 +108,24 @@ jobs:
         run: go build -o rebalancer ./cmd/rebalancer
 
       - name: Run backtest
-        run: ./rebalancer
+        run: ./rebalancer | tee /tmp/summary.txt
+
+      - name: Post job summary
+        if: always()
+        run: |
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat /tmp/summary.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Send summary email
+        if: always() && env.SMTP_SERVER != ''
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ env.SMTP_SERVER }}
+          server_port: 587
+          username: ${{ env.SMTP_USERNAME }}
+          password: ${{ env.SMTP_PASSWORD }}
+          to: ${{ env.NOTIFY_EMAIL }}
+          from: GitHub Actions <${{ env.SMTP_USERNAME }}>
+          subject: "[quant-stocks] Backtest — ${{ inputs.weeks }} weeks (run #${{ github.run_number }})"
+          body: file:///tmp/summary.txt

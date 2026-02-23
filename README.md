@@ -207,6 +207,60 @@ The `PROFILE_1_TRADIER_TOKEN` in BACKTEST holds sandbox credentials — the same
 
 ---
 
+### Step 4c — Set up email notifications (optional)
+
+After each run the workflow prints a formatted summary to the Actions log and to the job summary page. If you also want that summary delivered to your inbox, add four SMTP secrets to your GitHub environments.
+
+The email step is **completely optional** — if any of the four secrets are absent the step is silently skipped and everything else continues to work normally.
+
+---
+
+#### Getting SMTP credentials with Gmail
+
+Gmail is the easiest option. You need to create an **App Password** — a one-time 16-character token that lets GitHub Actions send email on your behalf without exposing your real password.
+
+> **Prerequisite:** Your Google account must have 2-Step Verification enabled. If it is not, go to [myaccount.google.com/security](https://myaccount.google.com/security) and turn it on first.
+
+1. Go to [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords).
+2. Under **App name**, type anything (e.g. `quant-stocks`).
+3. Click **Create**.
+4. Google shows a 16-character password (e.g. `abcd efgh ijkl mnop`). Copy it — it is shown only once.
+5. Use these values for the secrets below:
+
+| Secret | Value |
+| --- | --- |
+| `SMTP_SERVER` | `smtp.gmail.com` |
+| `SMTP_USERNAME` | your Gmail address (e.g. `you@gmail.com`) |
+| `SMTP_PASSWORD` | the 16-character App Password from step 4 |
+| `NOTIFY_EMAIL` | the address to send summaries to (can be the same address) |
+
+> **Other email providers:** Most providers that support SMTP over port 587 with STARTTLS will work. Set `SMTP_SERVER` to your provider's outgoing SMTP host and `SMTP_USERNAME` / `SMTP_PASSWORD` to your login credentials for that service.
+
+---
+
+#### Adding the secrets to GitHub
+
+Add the four secrets to **each environment** you want email notifications for:
+
+- **PROD environment** → Settings → Environments → PROD → Secrets
+- **BACKTEST environment** → Settings → Environments → BACKTEST → Secrets
+
+You can reuse the same App Password in both environments — it is not scoped to a specific workflow.
+
+| Secret | Description |
+| --- | --- |
+| `SMTP_SERVER` | SMTP host, e.g. `smtp.gmail.com` |
+| `SMTP_USERNAME` | Your login address, e.g. `you@gmail.com` |
+| `SMTP_PASSWORD` | App Password (not your regular account password) |
+| `NOTIFY_EMAIL` | Recipient address — where summaries are delivered |
+
+Once added, every workflow run sends an email with the full rebalance or backtest summary in the body. The subject lines are:
+
+- **Weekly rebalance:** `[quant-stocks] Weekly Rebalance — <run number>`
+- **Backtest:** `[quant-stocks] Backtest — <N> weeks (run #<run number>)`
+
+---
+
 ### Step 5 — Rankings are fetched automatically
 
 The rebalancer calls the QuantMyStocks leaderboard API on every run — no CSV files or manual data preparation required. It sends a POST request with the index identifier and the most recent trading day, and receives a ranked list of tickers in response. Current prices are then fetched from Tradier's quotes endpoint to calculate share counts.
@@ -317,6 +371,15 @@ All normal `PROFILE_1_*` variables and `RANKING_API_TOKEN` are also required. Th
 
 - For **sell-funded** slots: sell proceeds ÷ number of sells is too small. Either the sold position had low value or you are selling many stocks at once with little proceeds per slot.
 - For **organic** slots: `PROFILE_N_INITIAL_AMOUNT_PER_STOCK` is lower than the stock price. Increase this value or choose a lower-priced index to target.
+
+**Email step is skipped even though secrets are set**
+→ Verify all four secrets (`SMTP_SERVER`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `NOTIFY_EMAIL`) are present in the correct environment (PROD or BACKTEST). A missing secret makes the whole group evaluate to empty and the step is skipped.
+
+**Email step fails with "authentication failed"**
+→ Your `SMTP_PASSWORD` is your regular account password. Gmail requires an App Password — follow Step 4c above to generate one. Regular passwords are rejected when 2-Step Verification is enabled.
+
+**Email step fails with "connection refused" or timeout**
+→ Check that `SMTP_SERVER` is correct (e.g. `smtp.gmail.com`) and that port 587 is not blocked. Some corporate SMTP servers require port 465 — consult your provider's documentation.
 
 **A stock stays in the portfolio even though its rank dropped**
 → This is expected if its rank is still within the slack zone (`rank ≤ MAX_STOCKS + SLACK_VALUE`). Reduce `SLACK_VALUE` if you want faster turnover.
