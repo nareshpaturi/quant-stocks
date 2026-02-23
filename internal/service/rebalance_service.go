@@ -162,6 +162,65 @@ func (s *RebalanceService) Run(ctx context.Context, cfg domain.PortfolioConfig) 
 		s.logger.Info("buy executed", "ticker", order.Ticker, "orderID", orderID)
 	}
 
+	// Print human-readable summary to stdout (same format as backtest).
+	printRebalanceSummary(cfg, result, positions, rankings)
+
 	s.logger.Info("rebalance cycle complete")
 	return nil
+}
+
+// printRebalanceSummary writes a human-readable one-cycle summary to stdout.
+func printRebalanceSummary(
+	cfg domain.PortfolioConfig,
+	result domain.RebalanceResult,
+	positions []domain.Position,
+	rankings []domain.Rank,
+) {
+	n, s := cfg.MaxStocks, cfg.SlackValue
+
+	rankByTicker := make(map[string]int, len(rankings))
+	for _, r := range rankings {
+		rankByTicker[r.Ticker] = r.Position
+	}
+
+	posPrice := make(map[string]float64, len(positions))
+	for _, p := range positions {
+		posPrice[p.Ticker] = p.CurrentPrice
+	}
+
+	fmt.Printf("\n%s\n", "════════════════════════════════════════════════════════════════")
+	fmt.Printf("  REBALANCE SUMMARY  %s  [N=%d  slack=%d  threshold=%d]\n", cfg.IndexName, n, s, n+s)
+	fmt.Printf("%s\n", "════════════════════════════════════════════════════════════════")
+
+	fmt.Printf("  Sells (%d):", len(result.Sells))
+	if len(result.Sells) == 0 {
+		fmt.Printf("  —")
+	} else {
+		for _, o := range result.Sells {
+			fmt.Printf("  %s(%s) × %.0f @ $%.2f",
+				o.Ticker, rankLabel(rankByTicker, o.Ticker, n, s), o.Shares, posPrice[o.Ticker])
+		}
+	}
+	fmt.Println()
+
+	fmt.Printf("  Buys  (%d):", len(result.Buys))
+	if len(result.Buys) == 0 {
+		fmt.Printf("  —")
+	} else {
+		for _, o := range result.Buys {
+			fmt.Printf("  %s(%s) $%.0f", o.Ticker, rankLabel(rankByTicker, o.Ticker, n, s), o.Notional)
+		}
+	}
+	fmt.Println()
+
+	fmt.Printf("  Keep  (%d):", len(result.Retains))
+	if len(result.Retains) == 0 {
+		fmt.Printf("  —")
+	} else {
+		for _, t := range result.Retains {
+			fmt.Printf("  %s(%s)", t, rankLabel(rankByTicker, t, n, s))
+		}
+	}
+	fmt.Println()
+	fmt.Printf("%s\n\n", "════════════════════════════════════════════════════════════════")
 }
