@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -295,7 +296,8 @@ func (t *TradierBroker) ExecuteOrder(ctx context.Context, order domain.Order) (s
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("tradier ExecuteOrder: unexpected status %d", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("tradier ExecuteOrder: status %d body: %s", resp.StatusCode, body)
 	}
 
 	var placeResp tradierPlaceOrderResponse
