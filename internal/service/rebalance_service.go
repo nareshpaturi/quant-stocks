@@ -147,14 +147,14 @@ func (s *RebalanceService) Run(ctx context.Context, cfg domain.PortfolioConfig) 
 		}
 		s.logger.Info("submitting buy",
 			"ticker", order.Ticker,
-			"shares", order.Shares,
+			"notional", order.Notional,
 			"reason", order.Reason,
 		)
 		orderID, err := s.broker.ExecuteOrder(ctx, order)
 		if err != nil {
 			s.logger.Error("buy failed",
 				"ticker", order.Ticker,
-				"shares", order.Shares,
+				"notional", order.Notional,
 				"error", err,
 			)
 			continue

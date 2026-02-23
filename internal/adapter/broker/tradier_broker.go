@@ -218,9 +218,13 @@ func (t *TradierBroker) ExecuteOrder(ctx context.Context, order domain.Order) (s
 	form.Set("class", "equity")
 	form.Set("symbol", order.Ticker)
 	form.Set("side", string(order.Side))
-	form.Set("quantity", fmt.Sprintf("%.0f", order.Shares))
-	form.Set("type", "market")
+	form.Set("type", string(order.Type))
 	form.Set("duration", "day")
+	if order.Side == domain.OrderSideBuy {
+		form.Set("notional", fmt.Sprintf("%.2f", order.Notional))
+	} else {
+		form.Set("quantity", fmt.Sprintf("%.0f", order.Shares))
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint,
 		strings.NewReader(form.Encode()))

@@ -205,7 +205,7 @@ func TestRebalance(t *testing.T) {
 		},
 		{
 			name: "zero InitialAmountPerStock means no organic buys",
-			// InitialAmountPerStock=0 → sharesToBuy(0, 200)=0 → all organic slots skipped.
+			// InitialAmountPerStock=0 → notional=0 → all organic slots skipped.
 			cfg:  domain.PortfolioConfig{MaxStocks: 5, SlackValue: 1, InitialAmountPerStock: 0},
 			positions: nil,
 			rankings: []domain.Rank{
@@ -216,8 +216,7 @@ func TestRebalance(t *testing.T) {
 			wantBuys:  nil,
 		},
 		{
-			name: "buy share count uses floor not round",
-			// Organic slot: $1000 / $300 = 3.33 → floor to 3, not 4.
+			name:      "organic buy uses notional amount",
 			cfg:       domain.PortfolioConfig{MaxStocks: 1, SlackValue: 0, InitialAmountPerStock: 1000},
 			positions: nil,
 			rankings: []domain.Rank{
@@ -258,9 +257,9 @@ func TestRebalance(t *testing.T) {
 	}
 }
 
-// TestRebalanceShareCalculation verifies the exact share count math for organic buys.
-func TestRebalanceShareCalculation(t *testing.T) {
-	// Organic slot: InitialAmountPerStock=1000, price=300 → floor(1000/300) = 3.
+// TestRebalanceNotional verifies the notional dollar amount on buy orders.
+func TestRebalanceNotional(t *testing.T) {
+	// Organic slot: InitialAmountPerStock=1000 → Notional=1000.
 	cfg := domain.PortfolioConfig{MaxStocks: 1, SlackValue: 0, InitialAmountPerStock: 1000}
 	rankings := []domain.Rank{
 		{Ticker: "AAPL", Position: 1, Price: 300.0},
@@ -275,9 +274,11 @@ func TestRebalanceShareCalculation(t *testing.T) {
 	if buy.Ticker != "AAPL" {
 		t.Errorf("expected AAPL buy, got %s", buy.Ticker)
 	}
-	// floor(1000/300) = 3
-	if buy.Shares != 3.0 {
-		t.Errorf("expected 3 shares (floor of 1000/300), got %f", buy.Shares)
+	if buy.Notional != 1000.0 {
+		t.Errorf("expected notional=1000, got %f", buy.Notional)
+	}
+	if buy.Shares != 0 {
+		t.Errorf("expected shares=0 for buy order, got %f", buy.Shares)
 	}
 }
 

@@ -48,16 +48,27 @@ const (
 	OrderSideSell OrderSide = "sell"
 )
 
+// OrderType enumerates supported order execution types.
+type OrderType string
+
+const (
+	OrderTypeMarket OrderType = "market"
+)
+
 // Order represents a single trade instruction produced by the rebalancer.
 //
-//   - For sells: Shares is the full position quantity.
-//   - For buys: Shares is computed from projected cash divided by market price.
+//   - For sells: Shares is the full position quantity; Notional is zero.
+//   - For buys: Notional is the dollar amount to spend; Shares is zero.
+//     The broker submits notional orders so Tradier handles share sizing.
+//   - Type is the order execution type (e.g. OrderTypeMarket).
 //   - Reason is a human-readable label for logging ("liquidate", "acquire", etc.).
 type Order struct {
-	Ticker string
-	Side   OrderSide
-	Shares float64
-	Reason string
+	Ticker   string
+	Side     OrderSide
+	Type     OrderType
+	Shares   float64 // non-zero for sells
+	Notional float64 // non-zero for buys (dollar amount)
+	Reason   string
 }
 
 // RebalanceResult is the pure output of the domain Rebalance function.

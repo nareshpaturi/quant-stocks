@@ -19,11 +19,13 @@ type weekRecord struct {
 	Retains []string
 }
 
-// tradeRecord captures ticker, share count, and price for one order.
+// tradeRecord captures the details of one executed order.
+// Sells use Shares+Price; buys use Notional (broker handles share sizing).
 type tradeRecord struct {
-	Ticker string
-	Shares float64
-	Price  float64
+	Ticker   string
+	Shares   float64 // sells only
+	Price    float64 // sells only
+	Notional float64 // buys only
 }
 
 // BacktestRunner executes a multi-week paper-trading backtest.
@@ -133,6 +135,7 @@ func (b *BacktestRunner) liquidateAll(ctx context.Context) error {
 		order := domain.Order{
 			Ticker: pos.Ticker,
 			Side:   domain.OrderSideSell,
+			Type:   domain.OrderTypeMarket,
 			Shares: pos.Shares,
 			Reason: "backtest-clean-start",
 		}
@@ -222,9 +225,8 @@ func (b *BacktestRunner) runWeek(ctx context.Context, cfg domain.PortfolioConfig
 		}
 		b.logger.Info("backtest: buy executed", "ticker", order.Ticker, "orderID", orderID)
 		buys = append(buys, tradeRecord{
-			Ticker: order.Ticker,
-			Shares: order.Shares,
-			Price:  quotes[order.Ticker],
+			Ticker:   order.Ticker,
+			Notional: order.Notional,
 		})
 	}
 
@@ -263,7 +265,7 @@ func (b *BacktestRunner) printSummary(records []weekRecord) {
 			fmt.Printf("  —")
 		} else {
 			for _, t := range rec.Buys {
-				fmt.Printf("  %s × %.0f @ $%.2f ($%.0f)", t.Ticker, t.Shares, t.Price, t.Shares*t.Price)
+				fmt.Printf("  %s $%.0f notional", t.Ticker, t.Notional)
 			}
 		}
 		fmt.Println()

@@ -1,7 +1,6 @@
 package domain
 
 import (
-	"math"
 	"sort"
 )
 
@@ -69,6 +68,7 @@ func Rebalance(
 			sells = append(sells, Order{
 				Ticker: pos.Ticker,
 				Side:   OrderSideSell,
+				Type:   OrderTypeMarket,
 				Shares: pos.Shares,
 				Reason: reason,
 			})
@@ -136,34 +136,34 @@ func Rebalance(
 
 	buys := make([]Order, 0, len(candidates))
 
-	// Sell-funded buys: split sell proceeds equally.
+	// Sell-funded buys: each candidate gets an equal share of the sell proceeds.
 	if numSellFunded > 0 {
 		cashPerSlot := sellProceeds / float64(numSellFunded)
 		for _, c := range candidates[:numSellFunded] {
-			shares := sharesToBuy(cashPerSlot, c.Price)
-			if shares < 1 {
+			if cashPerSlot <= 0 {
 				continue
 			}
 			buys = append(buys, Order{
-				Ticker: c.Ticker,
-				Side:   OrderSideBuy,
-				Shares: shares,
-				Reason: "acquire",
+				Ticker:   c.Ticker,
+				Side:     OrderSideBuy,
+				Type:     OrderTypeMarket,
+				Notional: cashPerSlot,
+				Reason:   "acquire",
 			})
 		}
 	}
 
 	// Organic buys: fixed initial amount per slot.
 	for _, c := range candidates[numSellFunded:] {
-		shares := sharesToBuy(cfg.InitialAmountPerStock, c.Price)
-		if shares < 1 {
+		if cfg.InitialAmountPerStock <= 0 {
 			continue
 		}
 		buys = append(buys, Order{
-			Ticker: c.Ticker,
-			Side:   OrderSideBuy,
-			Shares: shares,
-			Reason: "initial-fill",
+			Ticker:   c.Ticker,
+			Side:     OrderSideBuy,
+			Type:     OrderTypeMarket,
+			Notional: cfg.InitialAmountPerStock,
+			Reason:   "initial-fill",
 		})
 	}
 
@@ -174,12 +174,3 @@ func Rebalance(
 	}
 }
 
-// sharesToBuy returns the number of whole shares purchasable for the given
-// notional amount at the given price. Uses math.Floor (not Round) to guarantee
-// the spend never exceeds the allocated notional. Returns 0 if price <= 0.
-func sharesToBuy(notional, price float64) float64 {
-	if price <= 0 {
-		return 0
-	}
-	return math.Floor(notional / price)
-}
