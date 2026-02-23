@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -276,7 +277,8 @@ func (t *TradierBroker) ExecuteOrder(ctx context.Context, order domain.Order) (s
 	form.Set("type", string(order.Type))
 	form.Set("duration", "day")
 	if order.Side == domain.OrderSideBuy {
-		form.Set("notional", fmt.Sprintf("%.2f", order.Notional))
+		qty := math.Floor(order.Notional / order.Price)
+		form.Set("quantity", fmt.Sprintf("%.0f", qty))
 	} else {
 		form.Set("quantity", fmt.Sprintf("%.0f", order.Shares))
 	}

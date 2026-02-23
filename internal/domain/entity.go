@@ -57,9 +57,9 @@ const (
 
 // Order represents a single trade instruction produced by the rebalancer.
 //
-//   - For sells: Shares is the full position quantity; Notional is zero.
-//   - For buys: Notional is the dollar amount to spend; Shares is zero.
-//     The broker submits notional orders so Tradier handles share sizing.
+//   - For sells: Shares is the full position quantity; Notional and Price are zero.
+//   - For buys: Notional is the dollar amount to spend; Price is the reference
+//     market price used by the broker to derive a share count (floor(Notional/Price)).
 //   - Type is the order execution type (e.g. OrderTypeMarket).
 //   - Reason is a human-readable label for logging ("liquidate", "acquire", etc.).
 type Order struct {
@@ -67,7 +67,8 @@ type Order struct {
 	Side     OrderSide
 	Type     OrderType
 	Shares   float64 // non-zero for sells
-	Notional float64 // non-zero for buys (dollar amount)
+	Notional float64 // non-zero for buys (dollar amount to invest)
+	Price    float64 // non-zero for buys (reference price for quantity derivation)
 	Reason   string
 }
 

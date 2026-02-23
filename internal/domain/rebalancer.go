@@ -148,6 +148,7 @@ func Rebalance(
 				Side:     OrderSideBuy,
 				Type:     OrderTypeMarket,
 				Notional: cashPerSlot,
+				Price:    c.Price,
 				Reason:   "acquire",
 			})
 		}
@@ -163,6 +164,7 @@ func Rebalance(
 			Side:     OrderSideBuy,
 			Type:     OrderTypeMarket,
 			Notional: cfg.InitialAmountPerStock,
+			Price:    c.Price,
 			Reason:   "initial-fill",
 		})
 	}
