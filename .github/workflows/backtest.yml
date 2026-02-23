@@ -37,6 +37,10 @@ on:
         description: "Pause between weekly runs in seconds (default: 120)"
         required: false
         default: "120"
+      index:
+        description: "Index to backtest — sp500, sp400, sp600, ndx (leave blank to use PROFILE_1_INDEX from BACKTEST environment)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -62,7 +66,7 @@ jobs:
 
       PROFILE_COUNT: "1"
       PROFILE_1_NAME:                    ${{ vars.PROFILE_1_NAME }}
-      PROFILE_1_INDEX:                   ${{ vars.PROFILE_1_INDEX }}
+      PROFILE_1_INDEX:                   ${{ inputs.index || vars.PROFILE_1_INDEX }}
       PROFILE_1_MAX_STOCKS:              ${{ vars.PROFILE_1_MAX_STOCKS }}
       PROFILE_1_SLACK_VALUE:             ${{ vars.PROFILE_1_SLACK_VALUE }}
       PROFILE_1_INITIAL_AMOUNT_PER_STOCK: ${{ vars.PROFILE_1_INITIAL_AMOUNT_PER_STOCK }}
