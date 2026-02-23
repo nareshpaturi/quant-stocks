@@ -140,7 +140,6 @@ Replace `N` with `1`, `2`, `3`, etc.
 | `PROFILE_N_MAX_STOCKS` | Target number of holdings | `25` |
 | `PROFILE_N_SLACK_VALUE` | Retention buffer (0 = no slack) | `5` |
 | `PROFILE_N_INITIAL_AMOUNT_PER_STOCK` | Dollar amount per organic buy slot (first run / top-up) | `5000` |
-| `PROFILE_N_TRADIER_SANDBOX` | `true` for paper trading, `false` for live | `false` |
 
 **Example — two profiles:**
 
@@ -152,14 +151,12 @@ PROFILE_1_INDEX                    = sp500
 PROFILE_1_MAX_STOCKS               = 25
 PROFILE_1_SLACK_VALUE              = 5
 PROFILE_1_INITIAL_AMOUNT_PER_STOCK = 5000
-PROFILE_1_TRADIER_SANDBOX          = false
 
 PROFILE_2_NAME                     = NDX Top 10
 PROFILE_2_INDEX                    = ndx
 PROFILE_2_MAX_STOCKS               = 10
 PROFILE_2_SLACK_VALUE              = 2
 PROFILE_2_INITIAL_AMOUNT_PER_STOCK = 3000
-PROFILE_2_TRADIER_SANDBOX          = false
 ```
 
 ---
@@ -218,18 +215,13 @@ Rankings reflect the most recent market close (Friday's close when the Action ru
 
 The Action runs automatically every **Monday at 14:35 UTC (10:35 AM ET)**, which is 5 minutes after the US market opens.
 
-You can trigger it manually at any time from **Actions → Weekly Portfolio Rebalance → Run workflow**. Manual runs use the same settings — set `PROFILE_N_TRADIER_SANDBOX=true` to run safely against Tradier's paper trading environment first.
+You can trigger it manually at any time from **Actions → Weekly Portfolio Rebalance → Run workflow**.
 
 ---
 
 ## Testing before going live
 
-We recommend this sequence:
-
-1. Set `PROFILE_N_TRADIER_SANDBOX=true` for all profiles.
-2. Trigger the workflow manually from the Actions tab.
-3. Verify the log output — check that the right stocks are being bought and sold.
-4. Once satisfied, set `PROFILE_N_TRADIER_SANDBOX=false` to switch to your live account.
+Use the **Paper Trading Backtest** workflow to validate your strategy settings against your Tradier sandbox account before enabling live trading. See the [Paper-trading backtest](#paper-trading-backtest) section for setup instructions.
 
 The rebalancer will never place the same order twice in one run. If a sell or buy for a ticker is already pending at Tradier (from a previous run or a manual order), it is automatically skipped.
 
@@ -276,7 +268,7 @@ These are separate from `PROFILE_N_TRADIER_TOKEN` so your live and paper account
 3. Optionally adjust the delay between runs (default: `120` seconds).
 4. Click **Run workflow**.
 
-The job uses your existing `PROFILE_1_*` GitHub Variables for the strategy settings (same index, MAX_STOCKS, SLACK_VALUE, and INITIAL_AMOUNT_PER_STOCK as your live profile). `PROFILE_1_TRADIER_SANDBOX` is hardcoded to `true` in the workflow — the backtest refuses to run against a live account.
+The job uses your existing `PROFILE_1_*` GitHub Variables for the strategy settings (same index, MAX_STOCKS, SLACK_VALUE, and INITIAL_AMOUNT_PER_STOCK as your live profile). The binary automatically routes to `sandbox.tradier.com` in backtest mode — it never touches your live account.
 
 ---
 
@@ -294,7 +286,6 @@ BACKTEST_MODE=true \
   PROFILE_1_INITIAL_AMOUNT_PER_STOCK=5000 \
   PROFILE_1_TRADIER_TOKEN="<your sandbox token>" \
   PROFILE_1_TRADIER_ACCOUNT_ID="<your sandbox account ID>" \
-  PROFILE_1_TRADIER_SANDBOX=true \
   RANKING_API_TOKEN="<your QuantMyStocks token>" \
   go run ./cmd/rebalancer
 ```
@@ -307,7 +298,7 @@ BACKTEST_MODE=true \
 | `BACKTEST_WEEKS` | Yes | Number of past weeks to simulate (e.g. `12`) |
 | `BACKTEST_DELAY_SECONDS` | No | Pause between weekly runs in seconds (default: `120`) |
 
-All normal `PROFILE_1_*` variables and `RANKING_API_TOKEN` are also required. `PROFILE_1_TRADIER_SANDBOX` **must** be `true` — the backtest refuses to run against a live account.
+All normal `PROFILE_1_*` variables and `RANKING_API_TOKEN` are also required. The binary automatically routes to `sandbox.tradier.com` in backtest mode — provide your Tradier sandbox account credentials.
 
 ---
 

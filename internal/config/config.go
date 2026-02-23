@@ -9,7 +9,6 @@
 //	  PROFILE_1_INDEX            index key    (e.g. "sp500")
 //	  PROFILE_1_MAX_STOCKS       target size  (e.g. "25")
 //	  PROFILE_1_SLACK_VALUE      retention buffer (e.g. "5")
-//	  PROFILE_1_TRADIER_SANDBOX  "true" for sandbox, "false" for live
 //	  ... repeat for PROFILE_2_, PROFILE_3_, etc.
 //
 //	GitHub Secrets  (Settings → Secrets and Variables → Actions → Secrets)
@@ -86,9 +85,6 @@ type BrokerConfig struct {
 
 	// AccountID is the Tradier account number (from GitHub Secret).
 	AccountID string
-
-	// Sandbox routes to sandbox.tradier.com when true.
-	Sandbox bool
 }
 
 // LoadFromEnv reads all profile configuration from environment variables.
@@ -196,7 +192,6 @@ func loadProfile(n int) (ProfileConfig, error) {
 			Type:      envOrDefault(pfx+"BROKER_TYPE", "tradier"),
 			Token:     os.Getenv(pfx + "TRADIER_TOKEN"),
 			AccountID: os.Getenv(pfx + "TRADIER_ACCOUNT_ID"),
-			Sandbox:   os.Getenv(pfx+"TRADIER_SANDBOX") == "true",
 		},
 	}, nil
 }
@@ -219,13 +214,6 @@ func (c *Config) Validate() error {
 		if len(c.Profiles) != 1 {
 			return fmt.Errorf(
 				"backtest mode supports exactly one profile — set PROFILE_COUNT=1",
-			)
-		}
-		p := c.Profiles[0]
-		if p.Broker.Type == "tradier" && !p.Broker.Sandbox {
-			return fmt.Errorf(
-				"backtest mode requires Tradier sandbox (paper trading) — " +
-					"set PROFILE_1_TRADIER_SANDBOX=true",
 			)
 		}
 	}

@@ -66,7 +66,7 @@ jobs:
 
       # ── Paper trading credentials (sandbox-only secrets) ─────────────────────
       # Use your Tradier SANDBOX account here — not your live account.
-      PROFILE_1_TRADIER_SANDBOX:         "true"   # hardcoded — never runs live
+      # The binary automatically routes to sandbox.tradier.com in backtest mode.
       PROFILE_1_TRADIER_TOKEN:           ${{ secrets.BACKTEST_TRADIER_TOKEN }}
       PROFILE_1_TRADIER_ACCOUNT_ID:      ${{ secrets.BACKTEST_TRADIER_ACCOUNT_ID }}
 
