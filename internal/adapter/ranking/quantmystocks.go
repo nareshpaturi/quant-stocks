@@ -68,9 +68,16 @@ func NewQuantMyStocksProvider(apiURL, token string) *QuantMyStocksProvider {
 	}
 }
 
-// GetRankings calls the QuantMyStocks API for the given index and returns the
-// ranked stock list. indexName must be one of: "sp500", "sp400", "sp600", "ndx".
+// GetRankings calls the QuantMyStocks API for the given index using the most
+// recent trading day. indexName must be one of: "sp500", "sp400", "sp600", "ndx".
 func (q *QuantMyStocksProvider) GetRankings(ctx context.Context, indexName string) ([]domain.Rank, error) {
+	return q.GetRankingsForDate(ctx, indexName, lastTradingDay())
+}
+
+// GetRankingsForDate calls the QuantMyStocks API for the given index and date.
+// date must be in "YYYY-MM-DD" format (typically a Friday market close).
+// Used by the backtest runner to fetch historical leaderboard snapshots.
+func (q *QuantMyStocksProvider) GetRankingsForDate(ctx context.Context, indexName, date string) ([]domain.Rank, error) {
 	indexID, ok := indexIDMap[indexName]
 	if !ok {
 		return nil, fmt.Errorf(
@@ -79,7 +86,7 @@ func (q *QuantMyStocksProvider) GetRankings(ctx context.Context, indexName strin
 	}
 
 	payload := qmsRequest{
-		MomDay:  lastTradingDay(),
+		MomDay:  date,
 		AlgoID:  "1",
 		IndexID: indexID,
 	}

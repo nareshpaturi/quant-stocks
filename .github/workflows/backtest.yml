@@ -1,0 +1,91 @@
+name: Paper Trading Backtest
+
+# ── How to use this workflow ───────────────────────────────────────────────────
+#
+# Trigger manually from Actions → Paper Trading Backtest → Run workflow.
+# Fill in the inputs, click Run, and watch the job log for per-week details.
+# A formatted summary is printed at the end of the "Run backtest" step.
+#
+# Requirements (in addition to the normal PROFILE_1_* variables):
+#
+#   SECRETS — add these under Settings → Secrets and Variables → Actions → Secrets:
+#     BACKTEST_TRADIER_TOKEN       Tradier Bearer token for your SANDBOX account
+#     BACKTEST_TRADIER_ACCOUNT_ID  Tradier account number for your SANDBOX account
+#
+#   These are separate from PROFILE_1_TRADIER_TOKEN so your live and paper
+#   accounts can coexist without any variable changes.
+#
+# Strategy parameters (MAX_STOCKS, SLACK_VALUE, etc.) are read from the
+# same PROFILE_1_* GitHub Variables used by the weekly rebalance job,
+# so no duplication is needed.
+#
+# The backtest ALWAYS runs against the Tradier sandbox — it refuses to
+# start if it detects a live account. Market must be open at trigger time.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_dispatch:
+    inputs:
+      weeks:
+        description: "Number of past Fridays to simulate (e.g. 12 = ~3 months)"
+        required: true
+        default: "12"
+      delay_seconds:
+        description: "Pause between weekly runs in seconds (default: 120)"
+        required: false
+        default: "120"
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    name: Run paper trading backtest
+    runs-on: ubuntu-latest
+    # Upper bound: N weeks × delay + execution overhead.
+    # GitHub Actions cap is 360 minutes; this supports up to ~150 weeks at
+    # the default 120 s delay before the job times out.
+    timeout-minutes: 360
+
+    env:
+      # ── Backtest control ─────────────────────────────────────────────────────
+      BACKTEST_MODE: "true"
+      BACKTEST_WEEKS: ${{ inputs.weeks }}
+      BACKTEST_DELAY_SECONDS: ${{ inputs.delay_seconds }}
+
+      # ── Rankings API (shared with the weekly rebalance) ──────────────────────
+      RANKING_API_TOKEN: ${{ secrets.RANKING_API_TOKEN }}
+
+      # ── Single-profile config (strategy params from existing GitHub Variables) ─
+      PROFILE_COUNT: "1"
+      PROFILE_1_NAME:                    ${{ vars.PROFILE_1_NAME }}
+      PROFILE_1_INDEX:                   ${{ vars.PROFILE_1_INDEX }}
+      PROFILE_1_MAX_STOCKS:              ${{ vars.PROFILE_1_MAX_STOCKS }}
+      PROFILE_1_SLACK_VALUE:             ${{ vars.PROFILE_1_SLACK_VALUE }}
+      PROFILE_1_INITIAL_AMOUNT_PER_STOCK: ${{ vars.PROFILE_1_INITIAL_AMOUNT_PER_STOCK }}
+
+      # ── Paper trading credentials (sandbox-only secrets) ─────────────────────
+      # Use your Tradier SANDBOX account here — not your live account.
+      PROFILE_1_TRADIER_SANDBOX:         "true"   # hardcoded — never runs live
+      PROFILE_1_TRADIER_TOKEN:           ${{ secrets.BACKTEST_TRADIER_TOKEN }}
+      PROFILE_1_TRADIER_ACCOUNT_ID:      ${{ secrets.BACKTEST_TRADIER_ACCOUNT_ID }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+
+      # Domain tests gate the run — failures abort before any orders are placed.
+      - name: Run domain unit tests
+        run: go test ./internal/domain/... -v -count=1
+
+      - name: Build rebalancer binary
+        run: go build -o rebalancer ./cmd/rebalancer
+
+      - name: Run backtest
+        run: ./rebalancer

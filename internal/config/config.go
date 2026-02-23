@@ -33,6 +33,22 @@ type Config struct {
 	RankingAPIURL   string // overrides the default QuantMyStocks API URL (optional)
 	RankingAPIToken string // Bearer token for the QuantMyStocks API (from GitHub Secret)
 	RankingMode     string // "mock" skips the real API; empty/other uses QuantMyStocks
+	Backtest        BacktestConfig
+}
+
+// BacktestConfig controls the paper-trading backtest runner.
+// It is active when BACKTEST_MODE=true.
+type BacktestConfig struct {
+	// Enabled is true when BACKTEST_MODE=true.
+	Enabled bool
+
+	// Weeks is the number of past weeks to simulate (BACKTEST_WEEKS).
+	// The runner starts from Weeks Fridays ago and runs up to the most recent Friday.
+	Weeks int
+
+	// DelaySeconds is the pause between consecutive weekly runs (BACKTEST_DELAY_SECONDS).
+	// Defaults to 120 seconds to allow paper orders to settle before the next cycle.
+	DelaySeconds int
 }
 
 // ProfileConfig defines one independent rebalancing portfolio.
@@ -102,11 +118,54 @@ func LoadFromEnv() (*Config, error) {
 		profiles = append(profiles, p)
 	}
 
+	backtest, err := loadBacktestConfig()
+	if err != nil {
+		return nil, err
+	}
+
 	return &Config{
 		Profiles:        profiles,
 		RankingAPIURL:   os.Getenv("RANKING_API_URL"),   // optional override; empty = use default
 		RankingAPIToken: os.Getenv("RANKING_API_TOKEN"), // Bearer token for QuantMyStocks API
 		RankingMode:     os.Getenv("RANKING_MODE"),      // "mock" for local testing without API
+		Backtest:        backtest,
+	}, nil
+}
+
+// loadBacktestConfig reads BACKTEST_MODE, BACKTEST_WEEKS, and BACKTEST_DELAY_SECONDS.
+// Returns a zero-value BacktestConfig (Enabled=false) when BACKTEST_MODE is not "true".
+func loadBacktestConfig() (BacktestConfig, error) {
+	if os.Getenv("BACKTEST_MODE") != "true" {
+		return BacktestConfig{}, nil
+	}
+
+	weeksStr := os.Getenv("BACKTEST_WEEKS")
+	if weeksStr == "" {
+		return BacktestConfig{}, fmt.Errorf(
+			"BACKTEST_WEEKS must be set when BACKTEST_MODE=true (e.g. \"12\" for 12 weeks)",
+		)
+	}
+	weeks, err := strconv.Atoi(weeksStr)
+	if err != nil || weeks <= 0 {
+		return BacktestConfig{}, fmt.Errorf(
+			"BACKTEST_WEEKS must be a positive integer, got %q", weeksStr,
+		)
+	}
+
+	delay := 120 // default: 2 minutes
+	if d := os.Getenv("BACKTEST_DELAY_SECONDS"); d != "" {
+		delay, err = strconv.Atoi(d)
+		if err != nil || delay < 0 {
+			return BacktestConfig{}, fmt.Errorf(
+				"BACKTEST_DELAY_SECONDS must be a non-negative integer, got %q", d,
+			)
+		}
+	}
+
+	return BacktestConfig{
+		Enabled:      true,
+		Weeks:        weeks,
+		DelaySeconds: delay,
 	}, nil
 }
 
@@ -154,6 +213,21 @@ func (c *Config) Validate() error {
 			"GitHub Secret RANKING_API_TOKEN is not set — " +
 				"set it to your QuantMyStocks API Bearer token",
 		)
+	}
+
+	if c.Backtest.Enabled {
+		if len(c.Profiles) != 1 {
+			return fmt.Errorf(
+				"backtest mode supports exactly one profile — set PROFILE_COUNT=1",
+			)
+		}
+		p := c.Profiles[0]
+		if p.Broker.Type == "tradier" && !p.Broker.Sandbox {
+			return fmt.Errorf(
+				"backtest mode requires Tradier sandbox (paper trading) — " +
+					"set PROFILE_1_TRADIER_SANDBOX=true",
+			)
+		}
 	}
 
 	seen := make(map[string]bool, len(c.Profiles))

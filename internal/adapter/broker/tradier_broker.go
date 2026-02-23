@@ -250,6 +250,25 @@ func (t *TradierBroker) ExecuteOrder(ctx context.Context, order domain.Order) (s
 	return fmt.Sprintf("%d", placeResp.Order.ID), nil
 }
 
+// ── IsMarketOpen ─────────────────────────────────────────────────────────────
+
+type tradierClockResponse struct {
+	Clock struct {
+		State string `json:"state"` // "premarket", "open", "postmarket", "closed"
+	} `json:"clock"`
+}
+
+// IsMarketOpen returns true when the Tradier market clock reports state "open".
+// The backtest runner calls this before starting to ensure paper orders can fill.
+func (t *TradierBroker) IsMarketOpen(ctx context.Context) (bool, error) {
+	endpoint := fmt.Sprintf("%s/markets/clock", t.baseURL)
+	var resp tradierClockResponse
+	if err := t.get(ctx, endpoint, &resp); err != nil {
+		return false, fmt.Errorf("tradier IsMarketOpen: %w", err)
+	}
+	return resp.Clock.State == "open", nil
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 // get performs a GET request and JSON-decodes the response body into dest.

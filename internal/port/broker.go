@@ -36,4 +36,9 @@ type Broker interface {
 	// For sells, order.Shares is the full position quantity.
 	// For buys, order.Shares is the floor-truncated share count computed by the domain.
 	ExecuteOrder(ctx context.Context, order domain.Order) (string, error)
+
+	// IsMarketOpen returns true when the US equity market is currently open for
+	// regular trading. Used by the backtest runner to prevent paper orders from
+	// being placed outside market hours.
+	IsMarketOpen(ctx context.Context) (bool, error)
 }

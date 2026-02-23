@@ -59,3 +59,8 @@ func (m *MockBroker) ExecuteOrder(_ context.Context, order domain.Order) (string
 	m.ExecutedOrders = append(m.ExecutedOrders, order)
 	return fmt.Sprintf("MOCK-%s-%s", string(order.Side), order.Ticker), nil
 }
+
+// IsMarketOpen always returns true for the mock — the mock is usable at any time.
+func (m *MockBroker) IsMarketOpen(_ context.Context) (bool, error) {
+	return true, nil
+}

@@ -235,6 +235,82 @@ The rebalancer will never place the same order twice in one run. If a sell or bu
 
 ---
 
+## Paper-trading backtest
+
+You can replay the last N weeks of the strategy against your Tradier **sandbox** (paper trading) account. The backtest fetches historical leaderboard rankings from QuantMyStocks for each past Friday, then executes real paper orders at current live prices.
+
+### How it works
+
+1. The backtest checks that the US market is currently open (paper orders only execute during market hours).
+2. All existing positions in the paper account are liquidated for a clean start.
+3. For each of the past `BACKTEST_WEEKS` Fridays (oldest → newest):
+   - Fetch the QuantMyStocks leaderboard as of that Friday.
+   - Fetch current live prices from Tradier for all ranked tickers.
+   - Run the rebalance strategy and execute paper sells, then paper buys.
+   - Wait `BACKTEST_DELAY_SECONDS` before the next week (default: 120 s).
+4. Print a detailed per-week summary to stdout.
+
+> **Note:** Prices used for buy sizing are today's live prices, not historical prices. Rankings are historical (the leaderboard snapshot for that Friday), but execution happens at whatever the market price is right now. This is consistent with how the weekly runner works — it uses the most recent Friday's ranks together with the current opening price.
+
+---
+
+### Running from GitHub Actions
+
+The easiest way to run a backtest is directly from your fork. Go to **Actions → Paper Trading Backtest → Run workflow**, fill in the number of weeks and an optional delay, then click **Run workflow**.
+
+#### Step 1 — Add two new Secrets for your Tradier sandbox account
+
+Go to **Settings → Secrets and Variables → Actions → Secrets** and add:
+
+| Secret | Description |
+|---|---|
+| `BACKTEST_TRADIER_TOKEN` | Tradier Bearer token for your **sandbox** account |
+| `BACKTEST_TRADIER_ACCOUNT_ID` | Tradier account number for your **sandbox** account |
+
+These are separate from `PROFILE_N_TRADIER_TOKEN` so your live and paper accounts never interfere with each other.
+
+#### Step 2 — Trigger the workflow
+
+1. Go to **Actions → Paper Trading Backtest → Run workflow**.
+2. Enter the number of weeks to simulate (e.g. `12` for ~3 months of history).
+3. Optionally adjust the delay between runs (default: `120` seconds).
+4. Click **Run workflow**.
+
+The job uses your existing `PROFILE_1_*` GitHub Variables for the strategy settings (same index, MAX_STOCKS, SLACK_VALUE, and INITIAL_AMOUNT_PER_STOCK as your live profile). `PROFILE_1_TRADIER_SANDBOX` is hardcoded to `true` in the workflow — the backtest refuses to run against a live account.
+
+---
+
+### Running a backtest locally
+
+```bash
+BACKTEST_MODE=true \
+  BACKTEST_WEEKS=12 \
+  BACKTEST_DELAY_SECONDS=120 \
+  PROFILE_COUNT=1 \
+  PROFILE_1_NAME="SP500 Backtest" \
+  PROFILE_1_INDEX=sp500 \
+  PROFILE_1_MAX_STOCKS=25 \
+  PROFILE_1_SLACK_VALUE=5 \
+  PROFILE_1_INITIAL_AMOUNT_PER_STOCK=5000 \
+  PROFILE_1_TRADIER_TOKEN="<your sandbox token>" \
+  PROFILE_1_TRADIER_ACCOUNT_ID="<your sandbox account ID>" \
+  PROFILE_1_TRADIER_SANDBOX=true \
+  RANKING_API_TOKEN="<your QuantMyStocks token>" \
+  go run ./cmd/rebalancer
+```
+
+### Backtest environment variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `BACKTEST_MODE` | Yes | Set to `true` to enable backtest mode |
+| `BACKTEST_WEEKS` | Yes | Number of past weeks to simulate (e.g. `12`) |
+| `BACKTEST_DELAY_SECONDS` | No | Pause between weekly runs in seconds (default: `120`) |
+
+All normal `PROFILE_1_*` variables and `RANKING_API_TOKEN` are also required. `PROFILE_1_TRADIER_SANDBOX` **must** be `true` — the backtest refuses to run against a live account.
+
+---
+
 ## Troubleshooting
 
 **Workflow fails with "GitHub Secret RANKING_API_TOKEN is not set"**
