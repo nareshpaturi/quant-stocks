@@ -62,9 +62,35 @@ type tradierPositionsResponse struct {
 }
 
 type tradierPositionWrapper struct {
-	// Tradier returns a single object when there is exactly one position and
-	// an array when there are many. We always decode into a slice.
-	Position []tradierRawPosition `json:"position"`
+	Position []tradierRawPosition
+}
+
+// UnmarshalJSON handles three Tradier response shapes for the "positions" field:
+//  1. The string "null"  — no positions held
+//  2. {"position": {...}} — a single position (object, not array)
+//  3. {"position": [{…}, …]} — multiple positions (array)
+func (w *tradierPositionWrapper) UnmarshalJSON(data []byte) error {
+	if string(data) == `"null"` {
+		return nil
+	}
+	var raw struct {
+		Position json.RawMessage `json:"position"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if len(raw.Position) == 0 || string(raw.Position) == "null" {
+		return nil
+	}
+	if raw.Position[0] == '[' {
+		return json.Unmarshal(raw.Position, &w.Position)
+	}
+	var p tradierRawPosition
+	if err := json.Unmarshal(raw.Position, &p); err != nil {
+		return err
+	}
+	w.Position = []tradierRawPosition{p}
+	return nil
 }
 
 type tradierRawPosition struct {
@@ -96,7 +122,35 @@ type tradierOrdersResponse struct {
 }
 
 type tradierOrdersWrapper struct {
-	Order []tradierRawOrder `json:"order"`
+	Order []tradierRawOrder
+}
+
+// UnmarshalJSON handles three Tradier response shapes for the "orders" field:
+//  1. The string "null"  — no open orders
+//  2. {"order": {...}}   — a single order (object, not array)
+//  3. {"order": [{…}, …]} — multiple orders (array)
+func (w *tradierOrdersWrapper) UnmarshalJSON(data []byte) error {
+	if string(data) == `"null"` {
+		return nil
+	}
+	var raw struct {
+		Order json.RawMessage `json:"order"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if len(raw.Order) == 0 || string(raw.Order) == "null" {
+		return nil
+	}
+	if raw.Order[0] == '[' {
+		return json.Unmarshal(raw.Order, &w.Order)
+	}
+	var o tradierRawOrder
+	if err := json.Unmarshal(raw.Order, &o); err != nil {
+		return err
+	}
+	w.Order = []tradierRawOrder{o}
+	return nil
 }
 
 type tradierRawOrder struct {
