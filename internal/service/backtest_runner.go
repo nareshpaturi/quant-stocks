@@ -13,10 +13,13 @@ import (
 
 // weekRecord stores the trades and retains for one backtest week's summary.
 type weekRecord struct {
-	Date    string
-	Sells   []tradeRecord
-	Buys    []tradeRecord
-	Retains []string
+	Date         string
+	Sells        []tradeRecord
+	Buys         []tradeRecord
+	Retains      []string
+	RankByTicker map[string]int // rank position for each ticker that appeared in the leaderboard
+	MaxStocks    int
+	SlackValue   int
 }
 
 // tradeRecord captures the details of one executed order.
@@ -182,6 +185,12 @@ func (b *BacktestRunner) runWeek(ctx context.Context, cfg domain.PortfolioConfig
 		}
 	}
 
+	// Build rank lookup for the summary.
+	rankByTicker := make(map[string]int, len(rankings))
+	for _, r := range rankings {
+		rankByTicker[r.Ticker] = r.Position
+	}
+
 	// Compute the rebalance orders.
 	result := domain.Rebalance(cfg, positions, rankings, cash)
 	b.logger.Info("backtest: week computed",
@@ -231,11 +240,32 @@ func (b *BacktestRunner) runWeek(ctx context.Context, cfg domain.PortfolioConfig
 	}
 
 	return weekRecord{
-		Date:    date,
-		Sells:   sells,
-		Buys:    buys,
-		Retains: result.Retains,
+		Date:         date,
+		Sells:        sells,
+		Buys:         buys,
+		Retains:      result.Retains,
+		RankByTicker: rankByTicker,
+		MaxStocks:    cfg.MaxStocks,
+		SlackValue:   cfg.SlackValue,
 	}, nil
+}
+
+// rankLabel returns the display string for a ticker's rank position.
+// Returns "—" when the ticker did not appear in the leaderboard that week.
+func rankLabel(rankByTicker map[string]int, ticker string, maxStocks, slackValue int) string {
+	r, ok := rankByTicker[ticker]
+	if !ok {
+		return "—"
+	}
+	threshold := maxStocks + slackValue
+	switch {
+	case r <= maxStocks:
+		return fmt.Sprintf("#%d(top-%d)", r, maxStocks)
+	case r <= threshold:
+		return fmt.Sprintf("#%d(slack)", r)
+	default:
+		return fmt.Sprintf("#%d(sell)", r)
+	}
 }
 
 // printSummary writes a human-readable backtest summary to stdout.
@@ -248,14 +278,16 @@ func (b *BacktestRunner) printSummary(records []weekRecord) {
 	fmt.Printf("%s\n\n", "════════════════════════════════════════════════════════════════")
 
 	for i, rec := range records {
-		fmt.Printf("Week %2d  %s\n", i+1, rec.Date)
+		n, s := rec.MaxStocks, rec.SlackValue
+		fmt.Printf("Week %2d  %s  [N=%d  slack=%d  threshold=%d]\n", i+1, rec.Date, n, s, n+s)
 
 		fmt.Printf("  Sells (%d):", len(rec.Sells))
 		if len(rec.Sells) == 0 {
 			fmt.Printf("  —")
 		} else {
 			for _, t := range rec.Sells {
-				fmt.Printf("  %s × %.0f @ $%.2f", t.Ticker, t.Shares, t.Price)
+				fmt.Printf("  %s(%s) × %.0f @ $%.2f",
+					t.Ticker, rankLabel(rec.RankByTicker, t.Ticker, n, s), t.Shares, t.Price)
 			}
 		}
 		fmt.Println()
@@ -265,7 +297,8 @@ func (b *BacktestRunner) printSummary(records []weekRecord) {
 			fmt.Printf("  —")
 		} else {
 			for _, t := range rec.Buys {
-				fmt.Printf("  %s $%.0f notional", t.Ticker, t.Notional)
+				fmt.Printf("  %s(%s) $%.0f",
+					t.Ticker, rankLabel(rec.RankByTicker, t.Ticker, n, s), t.Notional)
 			}
 		}
 		fmt.Println()
@@ -275,7 +308,7 @@ func (b *BacktestRunner) printSummary(records []weekRecord) {
 			fmt.Printf("  —")
 		} else {
 			for _, t := range rec.Retains {
-				fmt.Printf("  %s", t)
+				fmt.Printf("  %s(%s)", t, rankLabel(rec.RankByTicker, t, n, s))
 			}
 		}
 		fmt.Println()
