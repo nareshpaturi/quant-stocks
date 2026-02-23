@@ -101,9 +101,38 @@ type tradierRawPosition struct {
 }
 
 type tradierQuoteResponse struct {
-	Quotes struct {
-		Quote []tradierRawQuote `json:"quote"`
-	} `json:"quotes"`
+	Quotes tradierQuoteWrapper `json:"quotes"`
+}
+
+type tradierQuoteWrapper struct {
+	Quote []tradierRawQuote
+}
+
+// UnmarshalJSON handles two Tradier response shapes for the "quotes" field:
+//  1. {"quote": {...}}    — a single quote (object, not array)
+//  2. {"quote": [{…}, …]} — multiple quotes (array)
+func (w *tradierQuoteWrapper) UnmarshalJSON(data []byte) error {
+	if string(data) == `"null"` {
+		return nil
+	}
+	var raw struct {
+		Quote json.RawMessage `json:"quote"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if len(raw.Quote) == 0 || string(raw.Quote) == "null" {
+		return nil
+	}
+	if raw.Quote[0] == '[' {
+		return json.Unmarshal(raw.Quote, &w.Quote)
+	}
+	var q tradierRawQuote
+	if err := json.Unmarshal(raw.Quote, &q); err != nil {
+		return err
+	}
+	w.Quote = []tradierRawQuote{q}
+	return nil
 }
 
 type tradierRawQuote struct {
@@ -277,7 +306,15 @@ func (t *TradierBroker) ExecuteOrder(ctx context.Context, order domain.Order) (s
 	form.Set("type", string(order.Type))
 	form.Set("duration", "day")
 	if order.Side == domain.OrderSideBuy {
-		qty := math.Floor(order.Notional / order.Price)
+		prices, err := t.fetchQuotes(ctx, []string{order.Ticker})
+		if err != nil {
+			return "", fmt.Errorf("tradier ExecuteOrder: fresh quote for %s: %w", order.Ticker, err)
+		}
+		livePrice := prices[order.Ticker]
+		if livePrice <= 0 {
+			return "", fmt.Errorf("tradier ExecuteOrder: no live price for %s", order.Ticker)
+		}
+		qty := math.Floor(order.Notional / livePrice)
 		form.Set("quantity", fmt.Sprintf("%.0f", qty))
 	} else {
 		form.Set("quantity", fmt.Sprintf("%.0f", order.Shares))
