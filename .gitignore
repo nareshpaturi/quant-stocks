@@ -1,5 +1,5 @@
-# Build output
-rebalancer
+# Build output — anchored to root so cmd/rebalancer/ source is not ignored
+/rebalancer
 
 # Go toolchain
 *.test
