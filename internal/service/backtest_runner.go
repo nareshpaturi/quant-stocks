@@ -57,33 +57,20 @@ func NewBacktestRunner(
 
 // Run executes the full backtest sequence:
 //
-//  1. Verify market is open.
-//  2. Liquidate all current positions for a clean start.
-//  3. For each of the past `weeks` Fridays (oldest → newest):
+//  1. Liquidate all current positions for a clean start.
+//  2. For each of the past `weeks` Sundays (oldest → newest):
 //     a. Fetch historical rankings for that date.
 //     b. Fetch current (live) prices from the broker.
 //     c. Compute orders via domain.Rebalance.
 //     d. Execute paper sells, then paper buys.
 //     e. Wait delaySeconds before the next week (skipped after last week).
-//  4. Print a detailed summary.
+//  3. Print a detailed summary.
 func (b *BacktestRunner) Run(
 	ctx context.Context,
 	cfg domain.PortfolioConfig,
 	weeks, delaySeconds int,
 ) error {
-	// 1. Market hours check — paper orders don't fill when the market is closed.
-	open, err := b.broker.IsMarketOpen(ctx)
-	if err != nil {
-		return fmt.Errorf("check market hours: %w", err)
-	}
-	if !open {
-		return fmt.Errorf(
-			"market is not currently open — backtest requires an open market " +
-				"so that paper orders can execute at live prices",
-		)
-	}
-
-	// 2. Clean start: liquidate any existing paper positions.
+	// 1. Clean start: liquidate any existing paper positions.
 	b.logger.Info("backtest: liquidating all positions for clean start")
 	if err := b.liquidateAll(ctx); err != nil {
 		return fmt.Errorf("backtest clean start: %w", err)

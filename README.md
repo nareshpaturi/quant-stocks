@@ -325,14 +325,13 @@ You can replay the last N weeks of the strategy against your Tradier **sandbox**
 
 ### How it works
 
-1. The backtest checks that the US market is currently open (paper orders only execute during market hours).
-2. All existing positions in the paper account are liquidated for a clean start.
-3. For each of the past `BACKTEST_WEEKS` Sundays (oldest → newest):
+1. All existing positions in the paper account are liquidated for a clean start.
+2. For each of the past `BACKTEST_WEEKS` Sundays (oldest → newest):
    - Fetch the QuantMyStocks leaderboard as of that Sunday.
    - Fetch current live prices from Tradier for all ranked tickers.
    - Run the rebalance strategy and execute paper sells, then paper buys.
    - Wait `BACKTEST_DELAY_SECONDS` before the next week (default: 120 s).
-4. Print a detailed per-week summary to stdout.
+3. Print a detailed per-week summary to stdout.
 
 > **Note:** Prices used for buy sizing are today's live prices, not historical prices. Rankings are historical (the leaderboard snapshot for that Sunday), but execution happens at whatever the market price is right now. This is consistent with how the weekly runner works — it uses the most recent Sunday's ranks together with the current opening price.
 

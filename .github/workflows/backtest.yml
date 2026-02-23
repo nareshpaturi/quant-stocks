@@ -32,7 +32,6 @@ name: Paper Trading Backtest
 # holds sandbox credentials so the two environments never interfere.
 #
 # The binary automatically routes to sandbox.tradier.com in backtest mode.
-# Market must be open at trigger time for paper orders to execute.
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
