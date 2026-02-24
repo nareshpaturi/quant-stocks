@@ -77,6 +77,10 @@ func (q *QuantMyStocksProvider) GetRankings(ctx context.Context, indexName strin
 // GetRankingsForDate calls the QuantMyStocks API for the given index and date.
 // date must be in "YYYY-MM-DD" format (typically a Friday market close).
 // Used by the backtest runner to fetch historical leaderboard snapshots.
+//
+// Transient failures (network errors, 5xx responses) are retried up to
+// maxRankingAttempts times with exponential backoff (1 s, 2 s, 4 s, 8 s).
+// Non-retryable errors (4xx) are returned immediately.
 func (q *QuantMyStocksProvider) GetRankingsForDate(ctx context.Context, indexName, date string) ([]domain.Rank, error) {
 	indexID, ok := indexIDMap[indexName]
 	if !ok {
@@ -96,41 +100,66 @@ func (q *QuantMyStocksProvider) GetRankingsForDate(ctx context.Context, indexNam
 		return nil, fmt.Errorf("quantmystocks marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, q.apiURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("quantmystocks build request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	if q.token != "" {
-		req.Header.Set("Authorization", "Bearer "+q.token)
+	const maxAttempts = 5
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			// Exponential backoff: 1 s, 2 s, 4 s, 8 s
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Duration(1<<uint(attempt-1)) * time.Second):
+			}
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, q.apiURL, bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("quantmystocks build request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+		if q.token != "" {
+			req.Header.Set("Authorization", "Bearer "+q.token)
+		}
+
+		resp, err := q.httpClient.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("quantmystocks API call (attempt %d/%d): %w", attempt+1, maxAttempts, err)
+			continue
+		}
+
+		if resp.StatusCode >= 500 {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("quantmystocks API returned status %d (attempt %d/%d)", resp.StatusCode, attempt+1, maxAttempts)
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			// 4xx — not retryable (auth failure, bad request, etc.)
+			resp.Body.Close()
+			return nil, fmt.Errorf("quantmystocks API returned status %d", resp.StatusCode)
+		}
+
+		var stocks []qmsStock
+		decErr := json.NewDecoder(resp.Body).Decode(&stocks)
+		resp.Body.Close()
+		if decErr != nil {
+			return nil, fmt.Errorf("quantmystocks decode response: %w", decErr)
+		}
+
+		ranks := make([]domain.Rank, 0, len(stocks))
+		for _, s := range stocks {
+			ranks = append(ranks, domain.Rank{
+				Ticker:   s.Ticker,
+				Position: s.Rank,
+				// Price is not included in the API response; the service layer
+				// fetches prices via Broker.GetQuotes after rankings are loaded.
+			})
+		}
+		return ranks, nil
 	}
 
-	resp, err := q.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("quantmystocks API call: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("quantmystocks API returned status %d", resp.StatusCode)
-	}
-
-	var stocks []qmsStock
-	if err := json.NewDecoder(resp.Body).Decode(&stocks); err != nil {
-		return nil, fmt.Errorf("quantmystocks decode response: %w", err)
-	}
-
-	ranks := make([]domain.Rank, 0, len(stocks))
-	for _, s := range stocks {
-		ranks = append(ranks, domain.Rank{
-			Ticker:   s.Ticker,
-			Position: s.Rank,
-			// Price is not included in the API response; the service layer
-			// fetches prices via Broker.GetQuotes after rankings are loaded.
-		})
-	}
-	return ranks, nil
+	return nil, lastErr
 }
 
 // lastRankingDay returns the most recent Sunday date as "YYYY-MM-DD".
