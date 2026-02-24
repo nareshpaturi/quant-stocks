@@ -60,6 +60,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: rebalance-prod
+  cancel-in-progress: false
+
 jobs:
   rebalance:
     name: Rebalance all profiles
