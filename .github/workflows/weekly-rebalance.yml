@@ -40,8 +40,21 @@ name: Weekly Portfolio Rebalance
 
 on:
   schedule:
-    # Every Monday at 14:35 UTC = 10:35 AM ET (5 min after US market open).
+    # ── Monday ────────────────────────────────────────────────────────────────
+    # 08:30 UTC = 3:30 AM ET  — 30 min before pre-market opens; places GTC
+    #                           orders so they are ready when trading starts.
+    - cron: "30 8 * * 1"
+    # 09:05 UTC = 4:05 AM ET  — 5 min after pre-market opens (4:00 AM ET).
+    - cron: "5 9 * * 1"
+    # 14:35 UTC = 9:35 AM ET  — 5 min after regular market opens (9:30 AM ET).
     - cron: "35 14 * * 1"
+    # ── Tuesday – Friday ──────────────────────────────────────────────────────
+    # Same pre-market and market-open slots on other weekdays so that any
+    # GTC orders not yet filled (or new rebalance signals) are handled.
+    # 09:05 UTC = 4:05 AM ET  — pre-market open.
+    - cron: "5 9 * * 2-5"
+    # 14:35 UTC = 9:35 AM ET  — regular market open.
+    - cron: "35 14 * * 2-5"
   workflow_dispatch: # Manual trigger.
 
 permissions:

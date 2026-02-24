@@ -305,9 +305,21 @@ Rankings reflect the most recent market close (Friday's close when the Action ru
 
 ### Step 6 — Verify the workflow schedule
 
-The Action runs automatically every **Monday at 14:35 UTC (10:35 AM ET)**, which is 5 minutes after the US market opens.
+All orders use `duration=gtc` (good-till-cancelled) so an order placed before the market opens queues and fills when trading starts, rather than being rejected.
 
-You can trigger it manually at any time from **Actions → Weekly Portfolio Rebalance → Run workflow**.
+The workflow runs automatically on the following schedule (all times ET):
+
+| Day | Time | Trigger |
+| --- | --- | --- |
+| Monday | 3:30 AM | 30 min before pre-market — places GTC orders ahead of trading |
+| Monday | 4:05 AM | 5 min after pre-market opens (4:00 AM) |
+| Monday | 9:35 AM | 5 min after regular market opens (9:30 AM) |
+| Tue – Fri | 4:05 AM | Pre-market open — picks up any unfilled GTC orders or new signals |
+| Tue – Fri | 9:35 AM | Regular market open |
+
+The idempotency guard (open-orders check) ensures that if an order was already placed in an earlier run and is still pending, it will be skipped on the next run — no duplicate orders.
+
+You can also trigger it manually at any time from **Actions → Weekly Portfolio Rebalance → Run workflow**.
 
 ---
 

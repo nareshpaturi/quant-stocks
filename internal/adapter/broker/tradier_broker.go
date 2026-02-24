@@ -304,7 +304,7 @@ func (t *TradierBroker) ExecuteOrder(ctx context.Context, order domain.Order) (s
 	form.Set("symbol", order.Ticker)
 	form.Set("side", string(order.Side))
 	form.Set("type", string(order.Type))
-	form.Set("duration", "day")
+	form.Set("duration", "gtc")
 	if order.Side == domain.OrderSideBuy {
 		prices, err := t.fetchQuotes(ctx, []string{order.Ticker})
 		if err != nil {
