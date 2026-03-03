@@ -124,26 +124,6 @@ Fund each account with at least `MAX_STOCKS × INITIAL_AMOUNT_PER_STOCK` dollars
 
 ---
 
-#### Margin account vs cash account
-
-> **Recommendation: open a margin account.**
-
-The rebalancer executes sells first, then buys, within the same run. Whether the buy orders can use the sell proceeds immediately depends on the account type:
-
-| Account type | Sell settlement | Buy timing |
-| --- | --- | --- |
-| **Margin** | Buying power available immediately | Buys execute in the same run using unsettled proceeds |
-| **Cash** | Equity orders settle T+2 (two business days) | Buys must wait until proceeds settle or use pre-existing cash |
-
-With a **cash account** you have two options:
-
-- **Keep a standing cash buffer** equal to `MAX_STOCKS × INITIAL_AMOUNT_PER_STOCK` in the account at all times. The rebalancer uses this buffer to fund buys immediately; the sell proceeds replenish it after settlement.
-- **Accept a two-day lag** — sells execute Monday morning; buy orders placed in the same run will be rejected or fail if the account has insufficient settled cash. You would need to run the workflow again on Wednesday after proceeds settle.
-
-With a **margin account** neither of these applies — the unsettled proceeds from Monday's sells are available as buying power immediately, so sells and buys complete in the same run without any cash buffer requirement.
-
----
-
 ### Step 3 — Create two GitHub Environments
 
 This project uses GitHub Environments to keep live and paper-trading credentials completely separate. Each workflow reads only from its own environment.
@@ -411,7 +391,7 @@ All normal `PROFILE_1_*` variables and `RANKING_API_TOKEN` are also required. Th
 - For **organic** slots: `PROFILE_N_INITIAL_AMOUNT_PER_STOCK` is lower than the stock price. Increase this value or choose a lower-priced index to target.
 
 **Buy orders fail immediately after sells with "insufficient buying power" or similar**
-→ You are using a cash account and the sell proceeds have not yet settled (equity trades settle T+2). Either switch to a margin account (recommended — unsettled proceeds are available as buying power immediately) or keep a standing cash buffer equal to `MAX_STOCKS × INITIAL_AMOUNT_PER_STOCK` in the account so buys can be funded without waiting for settlement.
+→ The account does not have enough settled cash to fund the buys. Ensure the account is funded with at least `MAX_STOCKS × INITIAL_AMOUNT_PER_STOCK` before the run, or wait until the sell proceeds settle and trigger the workflow again.
 
 **Two profiles are buying or selling the same ticker, or cash sizing looks wrong**
 → You are likely using the same Tradier account for multiple profiles. Each profile reads positions, cash, and open orders from its own account independently. When two profiles share an account they see the same cash balance and the same position list — both profiles try to manage the same tickers simultaneously, producing doubled positions, conflicting orders, and incorrect buy sizing. Assign a separate Tradier account (and token) to each profile.
