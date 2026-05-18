@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 
 	"github.com/nareshpaturi/quant-stocks/internal/domain"
 	"github.com/nareshpaturi/quant-stocks/internal/port"
@@ -83,7 +84,26 @@ func (s *RebalanceService) Run(ctx context.Context, cfg domain.PortfolioConfig) 
 	if err != nil {
 		return fmt.Errorf("get rankings for index %q: %w", cfg.IndexName, err)
 	}
-	s.logger.Info("rankings fetched", "count", len(rankings))
+
+	// Audit snapshot: log the top N+slack entries from the ranks API response.
+	// These are the only ranks that drive trade decisions below, so this is the
+	// point-in-time record to reconstruct why a given order was placed.
+	threshold := cfg.MaxStocks + cfg.SlackValue
+	sortedTop := make([]domain.Rank, len(rankings))
+	copy(sortedTop, rankings)
+	sort.Slice(sortedTop, func(i, j int) bool { return sortedTop[i].Position < sortedTop[j].Position })
+	if len(sortedTop) > threshold {
+		sortedTop = sortedTop[:threshold]
+	}
+	topEntries := make([]string, len(sortedTop))
+	for i, r := range sortedTop {
+		topEntries[i] = fmt.Sprintf("%s:%d", r.Ticker, r.Position)
+	}
+	s.logger.Info("rankings fetched",
+		"count", len(rankings),
+		"threshold", threshold,
+		"top", topEntries,
+	)
 
 	// 4b. Enrich rankings with current prices from the broker.
 	// The QuantMyStocks API does not return prices; the broker quotes endpoint
