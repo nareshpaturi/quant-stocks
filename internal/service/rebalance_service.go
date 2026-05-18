@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"time"
 
 	"github.com/nareshpaturi/quant-stocks/internal/domain"
 	"github.com/nareshpaturi/quant-stocks/internal/port"
@@ -79,14 +80,16 @@ func (s *RebalanceService) Run(ctx context.Context, cfg domain.PortfolioConfig) 
 	}
 	s.logger.Info("open orders fetched", "count", len(openOrders))
 
-	// 4. Fetch rankings.
-	rankings, err := s.ranking.GetRankings(ctx, cfg.IndexName)
+	// 4. Fetch rankings for the most recent Sunday (when QuantMyStocks publishes).
+	rankingDate := lastRankingDay()
+	rankings, err := s.ranking.GetRankingsForDate(ctx, cfg.IndexName, rankingDate)
 	if err != nil {
-		return fmt.Errorf("get rankings for index %q: %w", cfg.IndexName, err)
+		return fmt.Errorf("get rankings for index %q on %s: %w", cfg.IndexName, rankingDate, err)
 	}
 
-	// Audit snapshot: log the top N+slack entries from the ranks API response.
-	// These are the only ranks that drive trade decisions below, so this is the
+	// Audit snapshot: log the date queried and the top N+slack entries from the
+	// ranks API response (index is on every line via the parent logger). These
+	// are the only ranks that drive trade decisions below, so this is the
 	// point-in-time record to reconstruct why a given order was placed.
 	threshold := cfg.MaxStocks + cfg.SlackValue
 	sortedTop := make([]domain.Rank, len(rankings))
@@ -100,6 +103,7 @@ func (s *RebalanceService) Run(ctx context.Context, cfg domain.PortfolioConfig) 
 		topEntries[i] = fmt.Sprintf("%s:%d", r.Ticker, r.Position)
 	}
 	s.logger.Info("rankings fetched",
+		"date", rankingDate,
 		"count", len(rankings),
 		"threshold", threshold,
 		"top", topEntries,
@@ -189,6 +193,14 @@ func (s *RebalanceService) Run(ctx context.Context, cfg domain.PortfolioConfig) 
 	return nil
 }
 
+// lastRankingDay returns the most recent Sunday as "YYYY-MM-DD". The
+// QuantMyStocks leaderboard publishes weekly on Sunday; this matches the
+// computation in the adapter so the audit log reflects the date queried.
+func lastRankingDay() string {
+	t := time.Now().UTC()
+	return t.AddDate(0, 0, -int(t.Weekday())).Format("2006-01-02")
+}
+
 // printRebalanceSummary writes a human-readable one-cycle summary to stdout.
 func printRebalanceSummary(
 	cfg domain.PortfolioConfig,
@@ -208,9 +220,27 @@ func printRebalanceSummary(
 		posPrice[p.Ticker] = p.CurrentPrice
 	}
 
+	threshold := n + s
+	sortedTop := make([]domain.Rank, len(rankings))
+	copy(sortedTop, rankings)
+	sort.Slice(sortedTop, func(i, j int) bool { return sortedTop[i].Position < sortedTop[j].Position })
+	if len(sortedTop) > threshold {
+		sortedTop = sortedTop[:threshold]
+	}
+
 	fmt.Printf("\n%s\n", "════════════════════════════════════════════════════════════════")
-	fmt.Printf("  REBALANCE SUMMARY  %s  [N=%d  slack=%d  threshold=%d]\n", cfg.IndexName, n, s, n+s)
+	fmt.Printf("  REBALANCE SUMMARY  %s  [N=%d  slack=%d  threshold=%d]\n", cfg.IndexName, n, s, threshold)
 	fmt.Printf("%s\n", "════════════════════════════════════════════════════════════════")
+
+	fmt.Printf("  Ranks (%d):", len(sortedTop))
+	if len(sortedTop) == 0 {
+		fmt.Printf("  —")
+	} else {
+		for _, r := range sortedTop {
+			fmt.Printf("  %s:%d", r.Ticker, r.Position)
+		}
+	}
+	fmt.Println()
 
 	fmt.Printf("  Sells (%d):", len(result.Sells))
 	if len(result.Sells) == 0 {

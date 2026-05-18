@@ -23,7 +23,7 @@ import (
 //	MSFT,2,415.20
 //	NVDA,3,875.00
 //
-// The IndexName argument to GetRankings is ignored; this provider always reads
+// The IndexName and date arguments are ignored; this provider always reads
 // the same configured file. Commit or generate the file as part of your CI
 // pipeline before the rebalancer job runs.
 type StaticCSVRankingProvider struct {
@@ -35,9 +35,9 @@ func NewStaticCSVRankingProvider(path string) *StaticCSVRankingProvider {
 	return &StaticCSVRankingProvider{FilePath: path}
 }
 
-// GetRankings reads and parses the CSV file, returning a Rank slice.
+// GetRankingsForDate reads and parses the CSV file, returning a Rank slice.
 // Rows with a leading '#' are treated as comments and skipped.
-func (s *StaticCSVRankingProvider) GetRankings(_ context.Context, _ string) ([]domain.Rank, error) {
+func (s *StaticCSVRankingProvider) GetRankingsForDate(_ context.Context, _, _ string) ([]domain.Rank, error) {
 	f, err := os.Open(s.FilePath)
 	if err != nil {
 		return nil, fmt.Errorf("open rankings CSV %q: %w", s.FilePath, err)

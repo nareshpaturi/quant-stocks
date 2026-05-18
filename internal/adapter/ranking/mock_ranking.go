@@ -19,6 +19,6 @@ func NewMockRankingProvider(rankings []domain.Rank) *MockRankingProvider {
 	return &MockRankingProvider{Rankings: rankings}
 }
 
-func (m *MockRankingProvider) GetRankings(_ context.Context, _ string) ([]domain.Rank, error) {
+func (m *MockRankingProvider) GetRankingsForDate(_ context.Context, _, _ string) ([]domain.Rank, error) {
 	return m.Rankings, nil
 }
