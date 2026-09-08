@@ -99,6 +99,20 @@ You can run as many portfolios as you want in parallel. Each one tracks a differ
 
 ---
 
+## Broker support
+
+| Broker | Status | Execution model |
+| --- | --- | --- |
+| Tradier | Implemented | Direct REST API; current production and paper-trading adapter |
+| Mock | Implemented | In-memory local development adapter |
+| Robinhood Trading MCP | Planned | Direct MCP client from Go; dedicated Agentic account; market + day orders |
+
+Robinhood cannot be selected in the current binary yet. The proposed integration does not require an LLM and does not reuse the primary Robinhood brokerage account. It uses Robinhood positions, buying power, and order history as durable execution state so repeated scheduled runs can reconcile pending and completed orders without an application trade database.
+
+See [Robinhood Trading MCP integration plan](docs/robinhood-mcp.md) for the exact architecture, pre-market behavior, limited-margin constraints, stateless retry algorithm, OAuth deployment requirements, code changes, tests, and rollout sequence.
+
+---
+
 ## Setup guide
 
 ### Step 1 — Fork this repository
@@ -285,7 +299,7 @@ Rankings reflect the most recent market close (Friday's close when the Action ru
 
 ### Step 6 — Verify the workflow schedule
 
-All orders use `duration=gtc` (good-till-cancelled) so an order placed before the market opens queues and fills when trading starts, rather than being rejected.
+The current Tradier adapter uses `duration=gtc` (good-till-cancelled) so an order placed before the market opens queues and fills when trading starts, rather than being rejected. The planned Robinhood adapter instead uses market + day orders and reconciles expired or failed orders on later scheduled runs.
 
 The workflow runs automatically on the following schedule (all times ET):
 
@@ -297,7 +311,7 @@ The workflow runs automatically on the following schedule (all times ET):
 | Tue – Fri | 4:05 AM | Pre-market open — picks up any unfilled GTC orders or new signals |
 | Tue – Fri | 9:35 AM | Regular market open |
 
-The idempotency guard (open-orders check) ensures that if an order was already placed in an earlier run and is still pending, it will be skipped on the next run — no duplicate orders.
+The current Tradier idempotency guard (open-orders check) ensures that if an order was already placed in an earlier run and is still pending, it will be skipped on the next run. Robinhood requires the fuller order-history reconciliation described in the integration plan.
 
 You can also trigger it manually at any time from **Actions → Weekly Portfolio Rebalance → Run workflow**.
 
@@ -307,7 +321,7 @@ You can also trigger it manually at any time from **Actions → Weekly Portfolio
 
 Use the **Paper Trading Backtest** workflow to validate your strategy settings against your Tradier sandbox account before enabling live trading. See the [Paper-trading backtest](#paper-trading-backtest) section for setup instructions.
 
-The rebalancer will never place the same order twice in one run. If a sell or buy for a ticker is already pending at Tradier (from a previous run or a manual order), it is automatically skipped.
+The current rebalancer will never place the same order twice in one run. If a sell or buy for a ticker is already pending at Tradier (from a previous run or a manual order), it is automatically skipped.
 
 ---
 
@@ -456,6 +470,7 @@ go test ./internal/domain/... -v
 ```text
 quant-stocks/
 ├── cmd/rebalancer/main.go              # Entry point — reads env vars, runs profiles
+├── docs/robinhood-mcp.md               # Planned Robinhood MCP architecture and rollout
 ├── internal/
 │   ├── config/config.go                # Loads profiles from environment variables
 │   ├── domain/
