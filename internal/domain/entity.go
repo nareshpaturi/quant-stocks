@@ -1,5 +1,7 @@
 package domain
 
+import "time"
+
 // PortfolioConfig defines the rules for one rebalancing cycle.
 //
 //   - IndexName: identifies which ranking list to pull (e.g. "sp500-momentum").
@@ -13,9 +15,10 @@ package domain
 //     Must be > 0; config.Validate enforces this so the service never calls
 //     Rebalance with a zero value when organic slots are expected.
 type PortfolioConfig struct {
-	IndexName            string
-	MaxStocks            int
-	SlackValue           int
+	ProfileName           string
+	IndexName             string
+	MaxStocks             int
+	SlackValue            int
 	InitialAmountPerStock float64
 }
 
@@ -55,6 +58,15 @@ const (
 	OrderTypeMarket OrderType = "market"
 )
 
+// OrderDuration is the time-in-force of a broker order. Strategy orders may
+// leave this empty and let the selected broker apply its configured default.
+type OrderDuration string
+
+const (
+	OrderDurationDay OrderDuration = "day"
+	OrderDurationGTC OrderDuration = "gtc"
+)
+
 // Order represents a single trade instruction produced by the rebalancer.
 //
 //   - For sells: Shares is the full position quantity; Notional is zero.
@@ -63,12 +75,16 @@ const (
 //   - Type is the order execution type (e.g. OrderTypeMarket).
 //   - Reason is a human-readable label for logging ("liquidate", "acquire", etc.).
 type Order struct {
-	Ticker   string
-	Side     OrderSide
-	Type     OrderType
-	Shares   float64 // non-zero for sells
-	Notional float64 // non-zero for buys (dollar amount to invest)
-	Reason   string
+	Ticker         string
+	Side           OrderSide
+	Type           OrderType
+	Duration       OrderDuration
+	Shares         float64 // non-zero for sells; resolved by review for buys
+	Notional       float64 // non-zero for buy strategy instructions
+	ReferencePrice float64 // planning price; brokers fetch a fresh quote before review
+	Reason         string
+	CycleID        string
+	ClientOrderID  string
 }
 
 // RebalanceResult is the pure output of the domain Rebalance function.
@@ -79,17 +95,114 @@ type RebalanceResult struct {
 	Retains []string // tickers kept without trading (for audit logging)
 }
 
-// OpenOrder represents an already-submitted order that is pending or active at
-// the broker. Used by the service layer for idempotency: an order whose
-// (Ticker, Side) pair already exists is not re-submitted.
-type OpenOrder struct {
-	Ticker string
-	Side   OrderSide
-	Shares float64
-	Status string // "open", "partially_filled", "pending"
+// BrokerOrderStatus is the broker-neutral lifecycle used by reconciliation.
+type BrokerOrderStatus string
+
+const (
+	BrokerOrderPending         BrokerOrderStatus = "pending"
+	BrokerOrderOpen            BrokerOrderStatus = "open"
+	BrokerOrderQueued          BrokerOrderStatus = "queued"
+	BrokerOrderPartiallyFilled BrokerOrderStatus = "partially_filled"
+	BrokerOrderFilled          BrokerOrderStatus = "filled"
+	BrokerOrderCanceled        BrokerOrderStatus = "canceled"
+	BrokerOrderRejected        BrokerOrderStatus = "rejected"
+	BrokerOrderExpired         BrokerOrderStatus = "expired"
+	BrokerOrderUnknown         BrokerOrderStatus = "unknown"
+)
+
+// BrokerOrder is the normalized durable execution record returned by a broker.
+// FilledShares and AverageFillPrice are authoritative for cycle accounting.
+type BrokerOrder struct {
+	ID                string
+	ClientOrderID     string
+	AccountID         string
+	Ticker            string
+	Side              OrderSide
+	Type              OrderType
+	Duration          OrderDuration
+	RequestedShares   float64
+	FilledShares      float64
+	RemainingShares   float64
+	AverageFillPrice  float64
+	EstimatedPrice    float64
+	EstimatedNotional float64
+	Status            BrokerOrderStatus
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	CycleID           string
 }
 
-// PendingKey returns a canonical deduplication key for this open order.
-func (o OpenOrder) PendingKey() string {
-	return o.Ticker + ":" + string(o.Side)
+// Active reports whether an order still has a broker-managed remainder.
+func (o BrokerOrder) Active() bool {
+	switch o.Status {
+	case BrokerOrderPending, BrokerOrderOpen, BrokerOrderQueued, BrokerOrderPartiallyFilled:
+		return true
+	default:
+		return false
+	}
+}
+
+// TerminalFailure reports whether an unfilled remainder may be retried.
+func (o BrokerOrder) TerminalFailure() bool {
+	switch o.Status {
+	case BrokerOrderCanceled, BrokerOrderRejected, BrokerOrderExpired:
+		return true
+	default:
+		return false
+	}
+}
+
+// FilledValue returns actual execution value and never a quote estimate.
+func (o BrokerOrder) FilledValue() float64 {
+	return o.FilledShares * o.AverageFillPrice
+}
+
+// CommittedValue returns actual fills plus the best available estimate for an
+// active remainder. It is used only for reserving cycle budget.
+func (o BrokerOrder) CommittedValue() float64 {
+	value := 0.0
+	if o.AverageFillPrice > 0 {
+		value = o.FilledValue()
+	}
+	if !o.Active() {
+		return value
+	}
+	price := o.EstimatedPrice
+	if price <= 0 {
+		price = o.AverageFillPrice
+	}
+	value += o.RemainingShares * price
+	if o.EstimatedNotional > value {
+		return o.EstimatedNotional
+	}
+	return value
+}
+
+// AccountSnapshot contains broker-reported funds available for trading.
+type AccountSnapshot struct {
+	AccountID     string
+	Cash          float64
+	BuyingPower   float64
+	Agentic       bool
+	LimitedMargin bool
+}
+
+// OrderQuery selects broker orders relevant to one reconciliation cycle.
+type OrderQuery struct {
+	AccountID string
+	CycleID   string
+	From      time.Time
+	To        time.Time
+}
+
+// OrderReview is an exact pre-trade instruction approved by the broker.
+// BrokerData is opaque adapter state and must never be logged.
+type OrderReview struct {
+	Order             Order
+	ReviewID          string
+	EstimatedPrice    float64
+	EstimatedNotional float64
+	Warnings          []string
+	Approved          bool
+	BrokerData        any
 }

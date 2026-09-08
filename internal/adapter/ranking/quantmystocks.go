@@ -155,4 +155,3 @@ func (q *QuantMyStocksProvider) GetRankingsForDate(ctx context.Context, indexNam
 
 	return nil, lastErr
 }
-

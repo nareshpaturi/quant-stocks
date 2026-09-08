@@ -157,8 +157,8 @@ func TestRebalance(t *testing.T) {
 		{
 			name: "empty portfolio buys top-N stocks from InitialAmountPerStock",
 			// All 3 slots are organic → each gets InitialAmountPerStock=$2000.
-			// AAPL floor(2000/200)=10, MSFT floor(2000/400)=5, NVDA floor(2000/800)=2.
-			cfg: domain.PortfolioConfig{MaxStocks: 3, SlackValue: 1, InitialAmountPerStock: 2000},
+			// Each order carries a $2000 notional; broker review resolves shares.
+			cfg:       domain.PortfolioConfig{MaxStocks: 3, SlackValue: 1, InitialAmountPerStock: 2000},
 			positions: nil,
 			rankings: []domain.Rank{
 				{Ticker: "AAPL", Position: 1, Price: 200},
@@ -173,7 +173,7 @@ func TestRebalance(t *testing.T) {
 		{
 			name: "sell proceeds fund replacement buy",
 			// Sell 10 TSLA @ $250 = $2500 proceeds → 1 sell-funded slot.
-			// AAPL: floor(2500/200) = 12 shares. No organic slots.
+			// AAPL receives the $2500 replacement notional. No organic slots.
 			cfg: domain.PortfolioConfig{MaxStocks: 1, SlackValue: 0},
 			positions: []domain.Position{
 				{Ticker: "TSLA", Shares: 10, CurrentPrice: 250},
@@ -206,7 +206,7 @@ func TestRebalance(t *testing.T) {
 		{
 			name: "zero InitialAmountPerStock means no organic buys",
 			// InitialAmountPerStock=0 → notional=0 → all organic slots skipped.
-			cfg:  domain.PortfolioConfig{MaxStocks: 5, SlackValue: 1, InitialAmountPerStock: 0},
+			cfg:       domain.PortfolioConfig{MaxStocks: 5, SlackValue: 1, InitialAmountPerStock: 0},
 			positions: nil,
 			rankings: []domain.Rank{
 				{Ticker: "AAPL", Position: 1, Price: 200},

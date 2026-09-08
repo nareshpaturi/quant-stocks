@@ -96,12 +96,11 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.25"
           cache: true
 
-      # Domain tests gate the run — failures abort before any orders are placed.
-      - name: Run domain unit tests
-        run: go test ./internal/domain/... -v -count=1
+      - name: Run test suite
+        run: go test ./... -count=1
 
       - name: Build rebalancer binary
         run: go build -o rebalancer ./cmd/rebalancer

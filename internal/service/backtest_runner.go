@@ -130,11 +130,11 @@ func (b *BacktestRunner) liquidateAll(ctx context.Context) error {
 			Reason: "backtest-clean-start",
 		}
 		b.logger.Info("backtest: liquidating", "ticker", pos.Ticker, "shares", pos.Shares)
-		orderID, err := b.broker.ExecuteOrder(ctx, order)
+		placed, err := b.submitOrder(ctx, order)
 		if err != nil {
 			return fmt.Errorf("sell %s: %w", pos.Ticker, err)
 		}
-		b.logger.Info("backtest: liquidated", "ticker", pos.Ticker, "orderID", orderID)
+		b.logger.Info("backtest: liquidated", "ticker", pos.Ticker, "orderID", placed.ID)
 	}
 	return nil
 }
@@ -146,9 +146,9 @@ func (b *BacktestRunner) runWeek(ctx context.Context, cfg domain.PortfolioConfig
 	if err != nil {
 		return weekRecord{}, fmt.Errorf("get positions: %w", err)
 	}
-	cash, err := b.broker.GetCash(ctx)
+	account, err := b.broker.GetAccount(ctx)
 	if err != nil {
-		return weekRecord{}, fmt.Errorf("get cash: %w", err)
+		return weekRecord{}, fmt.Errorf("get account: %w", err)
 	}
 
 	// Fetch historical rankings for this Friday.
@@ -179,7 +179,7 @@ func (b *BacktestRunner) runWeek(ctx context.Context, cfg domain.PortfolioConfig
 	}
 
 	// Compute the rebalance orders.
-	result := domain.Rebalance(cfg, positions, rankings, cash)
+	result := domain.Rebalance(cfg, positions, rankings, account.BuyingPower)
 	b.logger.Info("backtest: week computed",
 		"date", date,
 		"sells", len(result.Sells),
@@ -197,12 +197,12 @@ func (b *BacktestRunner) runWeek(ctx context.Context, cfg domain.PortfolioConfig
 	sells := make([]tradeRecord, 0, len(result.Sells))
 	for _, order := range result.Sells {
 		b.logger.Info("backtest: submitting sell", "ticker", order.Ticker, "shares", order.Shares)
-		orderID, err := b.broker.ExecuteOrder(ctx, order)
+		placed, err := b.submitOrder(ctx, order)
 		if err != nil {
 			b.logger.Error("backtest: sell failed", "ticker", order.Ticker, "error", err)
 			continue
 		}
-		b.logger.Info("backtest: sell executed", "ticker", order.Ticker, "orderID", orderID)
+		b.logger.Info("backtest: sell executed", "ticker", order.Ticker, "orderID", placed.ID)
 		sells = append(sells, tradeRecord{
 			Ticker: order.Ticker,
 			Shares: order.Shares,
@@ -214,12 +214,12 @@ func (b *BacktestRunner) runWeek(ctx context.Context, cfg domain.PortfolioConfig
 	buys := make([]tradeRecord, 0, len(result.Buys))
 	for _, order := range result.Buys {
 		b.logger.Info("backtest: submitting buy", "ticker", order.Ticker, "shares", order.Shares)
-		orderID, err := b.broker.ExecuteOrder(ctx, order)
+		placed, err := b.submitOrder(ctx, order)
 		if err != nil {
 			b.logger.Error("backtest: buy failed", "ticker", order.Ticker, "error", err)
 			continue
 		}
-		b.logger.Info("backtest: buy executed", "ticker", order.Ticker, "orderID", orderID)
+		b.logger.Info("backtest: buy executed", "ticker", order.Ticker, "orderID", placed.ID)
 		buys = append(buys, tradeRecord{
 			Ticker:   order.Ticker,
 			Notional: order.Notional,
@@ -235,6 +235,14 @@ func (b *BacktestRunner) runWeek(ctx context.Context, cfg domain.PortfolioConfig
 		MaxStocks:    cfg.MaxStocks,
 		SlackValue:   cfg.SlackValue,
 	}, nil
+}
+
+func (b *BacktestRunner) submitOrder(ctx context.Context, order domain.Order) (domain.BrokerOrder, error) {
+	review, err := b.broker.ReviewOrder(ctx, order)
+	if err != nil {
+		return domain.BrokerOrder{}, fmt.Errorf("review order: %w", err)
+	}
+	return b.broker.PlaceOrder(ctx, review)
 }
 
 // rankLabel returns the display string for a ticker's rank position.

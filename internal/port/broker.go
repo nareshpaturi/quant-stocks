@@ -18,24 +18,25 @@ type Broker interface {
 	// the domain layer can compute market values without extra API calls.
 	GetPositions(ctx context.Context) ([]domain.Position, error)
 
-	// GetCash returns the total uninvested cash available in the account.
-	GetCash(ctx context.Context) (float64, error)
+	// GetAccount returns broker-reported cash and buying power. BuyingPower is
+	// the final affordability boundary for live orders.
+	GetAccount(ctx context.Context) (domain.AccountSnapshot, error)
 
-	// GetOpenOrders returns all orders that are currently pending or active at
-	// the broker (status: "open", "partially_filled", "pending").
-	// Used by the service layer to enforce idempotency before placing new orders.
-	GetOpenOrders(ctx context.Context) ([]domain.OpenOrder, error)
+	// GetOrders returns active and historical orders in the requested cycle
+	// window so the service can reconcile fills and retries across processes.
+	GetOrders(ctx context.Context, query domain.OrderQuery) ([]domain.BrokerOrder, error)
 
 	// GetQuotes returns the latest last-trade price for each requested ticker.
 	// Used by the service layer to price buy candidates whose price is not
 	// included in the rankings feed.
 	GetQuotes(ctx context.Context, tickers []string) (map[string]float64, error)
 
-	// ExecuteOrder submits a market order to the broker.
-	// Returns the broker-assigned order ID on success.
-	// For sells, order.Shares is the full position quantity.
-	// For buys, order.Shares is the floor-truncated share count computed by the domain.
-	ExecuteOrder(ctx context.Context, order domain.Order) (string, error)
+	// ReviewOrder resolves an exact quantity and performs the broker's pre-trade
+	// validation. No order may be placed without a successful review.
+	ReviewOrder(ctx context.Context, order domain.Order) (domain.OrderReview, error)
+
+	// PlaceOrder submits exactly the instruction returned by ReviewOrder.
+	PlaceOrder(ctx context.Context, review domain.OrderReview) (domain.BrokerOrder, error)
 
 	// IsMarketOpen returns true when the US equity market is currently open for
 	// regular trading. Used by the backtest runner to prevent paper orders from

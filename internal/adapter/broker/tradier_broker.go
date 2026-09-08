@@ -22,18 +22,12 @@ const (
 // activeOrderStatuses is the set of order statuses considered "open" for
 // idempotency purposes. Any order in one of these states means the same
 // (ticker, side) trade must not be re-submitted.
-var activeOrderStatuses = map[string]bool{
-	"open":              true,
-	"partially_filled":  true,
-	"pending":           true,
-}
-
 // TradierBroker implements port.Broker using the Tradier REST API v1.
 //
 // Authentication uses a Bearer token set via the TRADIER_TOKEN environment
 // variable. Set sandbox=true to use the paper trading environment.
 //
-// All orders are market orders with duration "day".
+// All strategy orders are market orders with duration "gtc".
 type TradierBroker struct {
 	httpClient *http.Client
 	token      string
@@ -185,10 +179,16 @@ func (w *tradierOrdersWrapper) UnmarshalJSON(data []byte) error {
 }
 
 type tradierRawOrder struct {
-	Symbol   string  `json:"symbol"`
-	Side     string  `json:"side"`     // "buy", "sell", etc.
-	Quantity float64 `json:"quantity"`
-	Status   string  `json:"status"`
+	ID                int     `json:"id"`
+	Symbol            string  `json:"symbol"`
+	Side              string  `json:"side"` // "buy", "sell", etc.
+	Quantity          float64 `json:"quantity"`
+	ExecQuantity      float64 `json:"exec_quantity"`
+	RemainingQuantity float64 `json:"remaining_quantity"`
+	AvgFillPrice      float64 `json:"avg_fill_price"`
+	Status            string  `json:"status"`
+	CreateDate        string  `json:"create_date"`
+	TransactionDate   string  `json:"transaction_date"`
 }
 
 type tradierPlaceOrderResponse struct {
@@ -235,47 +235,63 @@ func (t *TradierBroker) GetPositions(ctx context.Context) ([]domain.Position, er
 	return positions, nil
 }
 
-// ── GetCash ───────────────────────────────────────────────────────────────────
+// ── GetAccount ────────────────────────────────────────────────────────────────
 
-// GetCash returns the cash_available balance from the account's cash sub-object.
-func (t *TradierBroker) GetCash(ctx context.Context) (float64, error) {
+// GetAccount returns Tradier's cash_available as both cash and buying power.
+func (t *TradierBroker) GetAccount(ctx context.Context) (domain.AccountSnapshot, error) {
 	endpoint := fmt.Sprintf("%s/accounts/%s/balances", t.baseURL, t.accountID)
 	var resp tradierBalancesResponse
 	if err := t.get(ctx, endpoint, &resp); err != nil {
-		return 0, fmt.Errorf("tradier GetCash: %w", err)
+		return domain.AccountSnapshot{}, fmt.Errorf("tradier GetAccount: %w", err)
 	}
-	return resp.Balances.Cash.CashAvailable, nil
+	cash := resp.Balances.Cash.CashAvailable
+	return domain.AccountSnapshot{AccountID: t.accountID, Cash: cash, BuyingPower: cash}, nil
 }
 
-// ── GetOpenOrders ─────────────────────────────────────────────────────────────
+// ── GetOrders ─────────────────────────────────────────────────────────────────
 
-// GetOpenOrders fetches all orders from the account and returns only those
-// whose status is "open", "partially_filled", or "pending".
-// The service layer uses this to skip orders that are already in flight.
-func (t *TradierBroker) GetOpenOrders(ctx context.Context) ([]domain.OpenOrder, error) {
-	endpoint := fmt.Sprintf("%s/accounts/%s/orders", t.baseURL, t.accountID)
+// GetOrders returns Tradier orders normalized into the shared lifecycle model.
+func (t *TradierBroker) GetOrders(ctx context.Context, query domain.OrderQuery) ([]domain.BrokerOrder, error) {
+	endpoint := fmt.Sprintf("%s/accounts/%s/orders?limit=1000", t.baseURL, t.accountID)
 	var resp tradierOrdersResponse
 	if err := t.get(ctx, endpoint, &resp); err != nil {
-		return nil, fmt.Errorf("tradier GetOpenOrders: %w", err)
+		return nil, fmt.Errorf("tradier GetOrders: %w", err)
 	}
 
-	var open []domain.OpenOrder
+	orders := make([]domain.BrokerOrder, 0, len(resp.Orders.Order))
 	for _, o := range resp.Orders.Order {
-		if !activeOrderStatuses[o.Status] {
-			continue
-		}
 		side := domain.OrderSideBuy
 		if strings.HasPrefix(o.Side, "sell") {
 			side = domain.OrderSideSell
 		}
-		open = append(open, domain.OpenOrder{
-			Ticker: o.Symbol,
-			Side:   side,
-			Shares: o.Quantity,
-			Status: o.Status,
+		createdAt := parseTradierTime(o.CreateDate)
+		if createdAt.IsZero() {
+			createdAt = parseTradierTime(o.TransactionDate)
+		}
+		if !query.From.IsZero() && !createdAt.IsZero() && createdAt.Before(query.From) {
+			continue
+		}
+		if !query.To.IsZero() && !createdAt.IsZero() && createdAt.After(query.To) {
+			continue
+		}
+		filled := o.ExecQuantity
+		status := normalizeTradierStatus(o.Status)
+		if status == domain.BrokerOrderFilled && filled <= 0 {
+			filled = o.Quantity
+		}
+		remaining := o.RemainingQuantity
+		if remaining <= 0 && (status == domain.BrokerOrderOpen || status == domain.BrokerOrderPending || status == domain.BrokerOrderPartiallyFilled) {
+			remaining = math.Max(0, o.Quantity-filled)
+		}
+		orders = append(orders, domain.BrokerOrder{
+			ID: fmt.Sprintf("%d", o.ID), AccountID: t.accountID,
+			Ticker: strings.ToUpper(o.Symbol), Side: side, Type: domain.OrderTypeMarket,
+			Duration: domain.OrderDurationGTC, RequestedShares: o.Quantity,
+			FilledShares: filled, RemainingShares: remaining, AverageFillPrice: o.AvgFillPrice,
+			Status: status, CreatedAt: createdAt, UpdatedAt: createdAt, CycleID: query.CycleID,
 		})
 	}
-	return open, nil
+	return orders, nil
 }
 
 // ── GetQuotes ─────────────────────────────────────────────────────────────────
@@ -292,11 +308,46 @@ func (t *TradierBroker) GetQuotes(ctx context.Context, tickers []string) (map[st
 	return prices, nil
 }
 
-// ── ExecuteOrder ─────────────────────────────────────────────────────────────
+// ── ReviewOrder / PlaceOrder ─────────────────────────────────────────────────
 
-// ExecuteOrder submits a market equity order to Tradier using a form-encoded
-// POST. Returns the Tradier-assigned numeric order ID as a string on success.
-func (t *TradierBroker) ExecuteOrder(ctx context.Context, order domain.Order) (string, error) {
+// ReviewOrder resolves Tradier's exact whole-share quantity locally.
+func (t *TradierBroker) ReviewOrder(ctx context.Context, order domain.Order) (domain.OrderReview, error) {
+	if order.Type == "" {
+		order.Type = domain.OrderTypeMarket
+	}
+	if order.Type != domain.OrderTypeMarket {
+		return domain.OrderReview{}, fmt.Errorf("tradier ReviewOrder: unsupported type %q", order.Type)
+	}
+	if order.Duration == "" {
+		order.Duration = domain.OrderDurationGTC
+	}
+	if order.Side == domain.OrderSideBuy {
+		prices, err := t.fetchQuotes(ctx, []string{order.Ticker})
+		if err != nil {
+			return domain.OrderReview{}, fmt.Errorf("tradier ReviewOrder: fresh quote for %s: %w", order.Ticker, err)
+		}
+		livePrice := prices[order.Ticker]
+		if livePrice <= 0 {
+			return domain.OrderReview{}, fmt.Errorf("tradier ReviewOrder: no live price for %s", order.Ticker)
+		}
+		order.Shares = math.Floor(order.Notional / livePrice)
+		if order.Shares < 1 {
+			return domain.OrderReview{}, fmt.Errorf("tradier ReviewOrder: notional %.2f buys no whole shares of %s at %.2f", order.Notional, order.Ticker, livePrice)
+		}
+		return domain.OrderReview{Order: order, EstimatedPrice: livePrice, EstimatedNotional: order.Shares * livePrice, Approved: true}, nil
+	}
+	if order.Side != domain.OrderSideSell || order.Shares <= 0 {
+		return domain.OrderReview{}, fmt.Errorf("tradier ReviewOrder: invalid %s order for %s", order.Side, order.Ticker)
+	}
+	return domain.OrderReview{Order: order, EstimatedNotional: order.Shares * order.ReferencePrice, Approved: true}, nil
+}
+
+// PlaceOrder submits exactly the reviewed market equity order to Tradier.
+func (t *TradierBroker) PlaceOrder(ctx context.Context, review domain.OrderReview) (domain.BrokerOrder, error) {
+	if !review.Approved {
+		return domain.BrokerOrder{}, fmt.Errorf("tradier PlaceOrder: order was not approved")
+	}
+	order := review.Order
 	endpoint := fmt.Sprintf("%s/accounts/%s/orders", t.baseURL, t.accountID)
 
 	form := url.Values{}
@@ -304,49 +355,43 @@ func (t *TradierBroker) ExecuteOrder(ctx context.Context, order domain.Order) (s
 	form.Set("symbol", order.Ticker)
 	form.Set("side", string(order.Side))
 	form.Set("type", string(order.Type))
-	form.Set("duration", "gtc")
-	if order.Side == domain.OrderSideBuy {
-		prices, err := t.fetchQuotes(ctx, []string{order.Ticker})
-		if err != nil {
-			return "", fmt.Errorf("tradier ExecuteOrder: fresh quote for %s: %w", order.Ticker, err)
-		}
-		livePrice := prices[order.Ticker]
-		if livePrice <= 0 {
-			return "", fmt.Errorf("tradier ExecuteOrder: no live price for %s", order.Ticker)
-		}
-		qty := math.Floor(order.Notional / livePrice)
-		form.Set("quantity", fmt.Sprintf("%.0f", qty))
-	} else {
-		form.Set("quantity", fmt.Sprintf("%.0f", order.Shares))
-	}
+	form.Set("duration", string(order.Duration))
+	form.Set("quantity", fmt.Sprintf("%.0f", order.Shares))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint,
 		strings.NewReader(form.Encode()))
 	if err != nil {
-		return "", fmt.Errorf("tradier ExecuteOrder build request: %w", err)
+		return domain.BrokerOrder{}, fmt.Errorf("tradier PlaceOrder build request: %w", err)
 	}
 	t.setHeaders(req)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := t.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("tradier ExecuteOrder: %w", err)
+		return domain.BrokerOrder{}, fmt.Errorf("tradier PlaceOrder: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("tradier ExecuteOrder: status %d body: %s", resp.StatusCode, body)
+		return domain.BrokerOrder{}, fmt.Errorf("tradier PlaceOrder: status %d body: %s", resp.StatusCode, body)
 	}
 
 	var placeResp tradierPlaceOrderResponse
 	if err := json.NewDecoder(resp.Body).Decode(&placeResp); err != nil {
-		return "", fmt.Errorf("tradier ExecuteOrder decode: %w", err)
+		return domain.BrokerOrder{}, fmt.Errorf("tradier PlaceOrder decode: %w", err)
 	}
 	if placeResp.Order.Status != "ok" {
-		return "", fmt.Errorf("tradier ExecuteOrder: order status %q", placeResp.Order.Status)
+		return domain.BrokerOrder{}, fmt.Errorf("tradier PlaceOrder: order status %q", placeResp.Order.Status)
 	}
-	return fmt.Sprintf("%d", placeResp.Order.ID), nil
+	return domain.BrokerOrder{
+		ID: fmt.Sprintf("%d", placeResp.Order.ID), AccountID: t.accountID,
+		ClientOrderID: order.ClientOrderID, Ticker: order.Ticker, Side: order.Side,
+		Type: order.Type, Duration: order.Duration, RequestedShares: order.Shares,
+		RemainingShares: order.Shares, EstimatedPrice: review.EstimatedPrice,
+		EstimatedNotional: review.EstimatedNotional, Status: domain.BrokerOrderPending,
+		CycleID: order.CycleID,
+	}, nil
 }
 
 // ── IsMarketOpen ─────────────────────────────────────────────────────────────
@@ -411,4 +456,34 @@ func (t *TradierBroker) fetchQuotes(ctx context.Context, symbols []string) (map[
 func (t *TradierBroker) setHeaders(req *http.Request) {
 	req.Header.Set("Authorization", "Bearer "+t.token)
 	req.Header.Set("Accept", "application/json")
+}
+
+func normalizeTradierStatus(status string) domain.BrokerOrderStatus {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "pending", "pending_cancel", "ok":
+		return domain.BrokerOrderPending
+	case "open":
+		return domain.BrokerOrderOpen
+	case "partially_filled":
+		return domain.BrokerOrderPartiallyFilled
+	case "filled":
+		return domain.BrokerOrderFilled
+	case "canceled", "cancelled":
+		return domain.BrokerOrderCanceled
+	case "rejected":
+		return domain.BrokerOrderRejected
+	case "expired":
+		return domain.BrokerOrderExpired
+	default:
+		return domain.BrokerOrderUnknown
+	}
+}
+
+func parseTradierTime(value string) time.Time {
+	for _, layout := range []string{time.RFC3339, "2006-01-02T15:04:05Z", "2006-01-02 15:04:05"} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed
+		}
+	}
+	return time.Time{}
 }

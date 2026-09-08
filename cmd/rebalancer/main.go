@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"flag"
+	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
-	brokeradapter  "github.com/nareshpaturi/quant-stocks/internal/adapter/broker"
+	brokeradapter "github.com/nareshpaturi/quant-stocks/internal/adapter/broker"
+	robinhoodadapter "github.com/nareshpaturi/quant-stocks/internal/adapter/broker/robinhood"
 	rankingadapter "github.com/nareshpaturi/quant-stocks/internal/adapter/ranking"
 	"github.com/nareshpaturi/quant-stocks/internal/config"
 	"github.com/nareshpaturi/quant-stocks/internal/domain"
@@ -17,6 +21,13 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
+	if len(os.Args) > 1 && os.Args[1] == "robinhood-auth" {
+		if err := runRobinhoodAuth(os.Args[2:]); err != nil {
+			logger.Error("Robinhood authentication failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	// All configuration comes from environment variables (GitHub Secrets + Variables).
 	// See internal/config/config.go for the full list of required variables.
@@ -42,7 +53,7 @@ func main() {
 			"delaySeconds", cfg.Backtest.DelaySeconds,
 		)
 
-		broker, err := wireBroker(profile.Broker, true) // always sandbox for backtest
+		broker, err := wireBroker(ctx, profile.Broker, true) // always sandbox for backtest
 		if err != nil {
 			logger.Error("broker wiring failed", "error", err)
 			os.Exit(1)
@@ -62,6 +73,7 @@ func main() {
 			logger.Error("backtest failed", "error", err)
 			os.Exit(1)
 		}
+		closeBroker(broker, logger)
 		return
 	}
 
@@ -79,7 +91,7 @@ func main() {
 		plog := logger.With("profile", profile.Name, "index", profile.Index)
 		plog.Info("profile starting")
 
-		broker, err := wireBroker(profile.Broker, false)
+		broker, err := wireBroker(ctx, profile.Broker, false)
 		if err != nil {
 			plog.Error("broker wiring failed", "error", err)
 			hasError = true
@@ -88,15 +100,18 @@ func main() {
 
 		svc := service.NewRebalanceService(broker, rankingProvider, plog)
 		if err := svc.Run(ctx, domain.PortfolioConfig{
+			ProfileName:           profile.Name,
 			IndexName:             profile.Index,
 			MaxStocks:             profile.MaxStocks,
 			SlackValue:            profile.SlackValue,
 			InitialAmountPerStock: profile.InitialAmountPerStock,
 		}); err != nil {
 			plog.Error("profile rebalance failed", "error", err)
+			closeBroker(broker, plog)
 			hasError = true
 			continue
 		}
+		closeBroker(broker, plog)
 
 		plog.Info("profile complete")
 	}
@@ -108,11 +123,28 @@ func main() {
 
 // wireBroker constructs the correct Broker adapter from a BrokerConfig.
 // sandbox=true routes to sandbox.tradier.com; always false for normal rebalance runs.
-func wireBroker(cfg config.BrokerConfig, sandbox bool) (port.Broker, error) {
+func wireBroker(ctx context.Context, cfg config.BrokerConfig, sandbox bool) (port.Broker, error) {
 	switch cfg.Type {
 	case "tradier":
 		return brokeradapter.NewTradierBroker(cfg.Token, cfg.AccountID, sandbox), nil
-	default: // "mock"
+	case "robinhood":
+		if sandbox {
+			return nil, fmt.Errorf("Robinhood has no supported paper environment")
+		}
+		var writer robinhoodadapter.SecretWriter
+		if os.Getenv("GITHUB_ACTIONS") == "true" {
+			writer = robinhoodadapter.GitHubCLISecretWriter{
+				Repository: os.Getenv("GITHUB_REPOSITORY"), Environment: "PROD",
+				SecretName: cfg.Robinhood.OAuthSecretName,
+			}
+		}
+		return robinhoodadapter.New(ctx, robinhoodadapter.Config{
+			Endpoint: cfg.Robinhood.MCPURL, AccountID: cfg.Robinhood.AccountID,
+			OAuthStateFile: cfg.Robinhood.OAuthStateFile,
+			Mode:           robinhoodadapter.ExecutionMode(cfg.Robinhood.Mode),
+			LiveTrading:    cfg.Robinhood.LiveTrading, SecretWriter: writer,
+		})
+	case "mock":
 		return brokeradapter.NewMockBroker(
 			[]domain.Position{
 				{Ticker: "AAPL", Shares: 10, CurrentPrice: 195.50},
@@ -120,7 +152,33 @@ func wireBroker(cfg config.BrokerConfig, sandbox bool) (port.Broker, error) {
 			},
 			5000.00,
 		), nil
+	default:
+		return nil, fmt.Errorf("unsupported broker type %q", cfg.Type)
 	}
+}
+
+func closeBroker(broker port.Broker, logger *slog.Logger) {
+	if closer, ok := broker.(interface{ Close() error }); ok {
+		if err := closer.Close(); err != nil {
+			logger.Warn("broker close failed", "error", err)
+		}
+	}
+}
+
+func runRobinhoodAuth(args []string) error {
+	flags := flag.NewFlagSet("robinhood-auth", flag.ContinueOnError)
+	endpoint := flags.String("mcp-url", robinhoodadapter.DefaultMCPURL, "Robinhood Trading MCP URL")
+	output := flags.String("output", "", "protected OAuth state output file")
+	port := flags.Int("callback-port", 3142, "localhost OAuth callback port")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *output == "" {
+		return fmt.Errorf("--output is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+	return robinhoodadapter.BootstrapOAuth(ctx, *endpoint, *output, *port, os.Stdout)
 }
 
 // wireRanking returns the QuantMyStocks provider for live runs, or a mock

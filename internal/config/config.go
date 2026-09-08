@@ -23,8 +23,12 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 )
+
+const DefaultRobinhoodMCPURL = "https://agent.robinhood.com/mcp/trading"
 
 // Config is the root configuration holding all profiles.
 type Config struct {
@@ -77,7 +81,7 @@ type ProfileConfig struct {
 
 // BrokerConfig specifies which broker adapter to use and its credentials.
 type BrokerConfig struct {
-	// Type selects the adapter: "tradier" (default) or "mock".
+	// Type selects the adapter: "tradier" (default), "robinhood", or "mock".
 	Type string
 
 	// Token is the Tradier Bearer token (from GitHub Secret).
@@ -85,6 +89,18 @@ type BrokerConfig struct {
 
 	// AccountID is the Tradier account number (from GitHub Secret).
 	AccountID string
+
+	Robinhood RobinhoodConfig
+}
+
+// RobinhoodConfig contains Agentic-account and OAuth runtime settings.
+type RobinhoodConfig struct {
+	AccountID       string
+	MCPURL          string
+	OAuthStateFile  string
+	OAuthSecretName string
+	Mode            string
+	LiveTrading     bool
 }
 
 // LoadFromEnv reads all profile configuration from environment variables.
@@ -182,6 +198,15 @@ func loadProfile(n int) (ProfileConfig, error) {
 		return ProfileConfig{}, err
 	}
 
+	liveTrading, err := optionalEnvBool(pfx + "ROBINHOOD_LIVE_TRADING")
+	if err != nil {
+		return ProfileConfig{}, err
+	}
+	robinhoodMode := envOrDefault(pfx+"ROBINHOOD_MODE", "shadow")
+	if liveTrading {
+		robinhoodMode = "live"
+	}
+
 	return ProfileConfig{
 		Name:                  os.Getenv(pfx + "NAME"),
 		Index:                 os.Getenv(pfx + "INDEX"),
@@ -192,6 +217,14 @@ func loadProfile(n int) (ProfileConfig, error) {
 			Type:      envOrDefault(pfx+"BROKER_TYPE", "tradier"),
 			Token:     os.Getenv(pfx + "TRADIER_TOKEN"),
 			AccountID: os.Getenv(pfx + "TRADIER_ACCOUNT_ID"),
+			Robinhood: RobinhoodConfig{
+				AccountID:       os.Getenv(pfx + "ROBINHOOD_ACCOUNT_ID"),
+				MCPURL:          envOrDefault(pfx+"ROBINHOOD_MCP_URL", DefaultRobinhoodMCPURL),
+				OAuthStateFile:  os.Getenv(pfx + "ROBINHOOD_OAUTH_STATE_FILE"),
+				OAuthSecretName: envOrDefault(pfx+"ROBINHOOD_OAUTH_SECRET_NAME", pfx+"ROBINHOOD_OAUTH_STATE"),
+				Mode:            robinhoodMode,
+				LiveTrading:     liveTrading,
+			},
 		},
 	}, nil
 }
@@ -219,6 +252,8 @@ func (c *Config) Validate() error {
 	}
 
 	seen := make(map[string]bool, len(c.Profiles))
+	seenAccounts := make(map[string]string, len(c.Profiles))
+	seenOAuthFiles := make(map[string]string, len(c.Profiles))
 	for i, p := range c.Profiles {
 		n := i + 1
 		pfx := fmt.Sprintf("PROFILE_%d_", n)
@@ -253,16 +288,99 @@ func (c *Config) Validate() error {
 					"GitHub Secret %sTRADIER_ACCOUNT_ID is not set (profile %q)", pfx, p.Name,
 				)
 			}
+			if previous := seenAccounts["tradier:"+p.Broker.AccountID]; previous != "" {
+				return fmt.Errorf("profiles %q and %q use the same Tradier account", previous, p.Name)
+			}
+			seenAccounts["tradier:"+p.Broker.AccountID] = p.Name
+		case "robinhood":
+			if c.Backtest.Enabled {
+				return fmt.Errorf("Robinhood is not supported in backtest mode; use Tradier sandbox")
+			}
+			rh := p.Broker.Robinhood
+			if rh.AccountID == "" {
+				return fmt.Errorf("GitHub Variable %sROBINHOOD_ACCOUNT_ID is not set (profile %q)", pfx, p.Name)
+			}
+			if rh.OAuthStateFile == "" {
+				return fmt.Errorf("GitHub Variable %sROBINHOOD_OAUTH_STATE_FILE is not set (profile %q)", pfx, p.Name)
+			}
+			oauthPath, err := filepath.Abs(rh.OAuthStateFile)
+			if err != nil {
+				return fmt.Errorf("%sROBINHOOD_OAUTH_STATE_FILE: %w", pfx, err)
+			}
+			if previous := seenOAuthFiles[oauthPath]; previous != "" {
+				return fmt.Errorf("profiles %q and %q use the same Robinhood OAuth state file", previous, p.Name)
+			}
+			seenOAuthFiles[oauthPath] = p.Name
+			if !strings.HasPrefix(rh.MCPURL, "https://") {
+				return fmt.Errorf("GitHub Variable %sROBINHOOD_MCP_URL must use https", pfx)
+			}
+			if rh.LiveTrading && rh.MCPURL != DefaultRobinhoodMCPURL {
+				return fmt.Errorf("live Robinhood trading requires the official MCP endpoint %s", DefaultRobinhoodMCPURL)
+			}
+			switch rh.Mode {
+			case "read-only", "shadow", "review", "live":
+			default:
+				return fmt.Errorf("GitHub Variable %sROBINHOOD_MODE must be read-only, shadow, review, or live", pfx)
+			}
+			if rh.Mode == "live" && !rh.LiveTrading {
+				return fmt.Errorf("%sROBINHOOD_LIVE_TRADING must be true when ROBINHOOD_MODE=live", pfx)
+			}
+			if os.Getenv("GITHUB_ACTIONS") == "true" {
+				if err := requirePathBelow(rh.OAuthStateFile, os.Getenv("RUNNER_TEMP")); err != nil {
+					return fmt.Errorf("%sROBINHOOD_OAUTH_STATE_FILE: %w", pfx, err)
+				}
+				if os.Getenv("GH_TOKEN") == "" {
+					return fmt.Errorf("GH_TOKEN is required for synchronous Robinhood OAuth write-back")
+				}
+				if os.Getenv("GITHUB_REPOSITORY") == "" {
+					return fmt.Errorf("GITHUB_REPOSITORY is required for Robinhood OAuth write-back")
+				}
+			}
+			key := "robinhood:" + rh.AccountID
+			if previous := seenAccounts[key]; previous != "" {
+				return fmt.Errorf("profiles %q and %q use the same Robinhood Agentic account", previous, p.Name)
+			}
+			seenAccounts[key] = p.Name
 		case "mock":
 			// no credentials required
 		default:
 			return fmt.Errorf(
-				"GitHub Variable %sBROKER_TYPE is %q — must be \"tradier\" or \"mock\" (profile %q)",
+				"GitHub Variable %sBROKER_TYPE is %q — must be \"tradier\", \"robinhood\", or \"mock\" (profile %q)",
 				pfx, p.Broker.Type, p.Name,
 			)
 		}
 	}
 	return nil
+}
+
+func requirePathBelow(path, root string) error {
+	if root == "" {
+		return fmt.Errorf("RUNNER_TEMP is not set")
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(absRoot, absPath)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("must be below RUNNER_TEMP")
+	}
+	return nil
+}
+
+func optionalEnvBool(key string) (bool, error) {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if value == "" || value == "false" {
+		return false, nil
+	}
+	if value == "true" {
+		return true, nil
+	}
+	return false, fmt.Errorf("GitHub Variable %s must be true or false", key)
 }
 
 func requireEnvInt(key string, profileN int) (int, error) {

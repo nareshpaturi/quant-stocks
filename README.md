@@ -1,6 +1,6 @@
 # quant-stocks
 
-A weekly stock portfolio rebalancer that runs automatically as a GitHub Action every Monday morning. It connects to your Tradier brokerage account, fetches the latest momentum rankings from the QuantMyStocks leaderboard API, and executes the minimum set of trades needed to keep your portfolio aligned with the strategy.
+A weekly stock portfolio rebalancer that runs automatically as a GitHub Action. It supports Tradier and Robinhood Agentic accounts, fetches the latest momentum rankings from the QuantMyStocks leaderboard API, and executes the minimum set of trades needed to keep your portfolio aligned with the strategy.
 
 You configure everything through GitHub Secrets and Variables — no code changes required.
 
@@ -105,11 +105,11 @@ You can run as many portfolios as you want in parallel. Each one tracks a differ
 | --- | --- | --- |
 | Tradier | Implemented | Direct REST API; current production and paper-trading adapter |
 | Mock | Implemented | In-memory local development adapter |
-| Robinhood Trading MCP | Planned | Direct MCP client from Go; dedicated Agentic account; market + day orders |
+| Robinhood Trading MCP | Implemented (staged rollout) | Official MCP client from Go; dedicated Agentic account; market + day orders |
 
-Robinhood cannot be selected in the current binary yet. The proposed integration does not require an LLM and does not reuse the primary Robinhood brokerage account. It uses Robinhood positions, buying power, and order history as durable execution state so repeated scheduled runs can reconcile pending and completed orders without an application trade database. OAuth state is stored per profile in the protected GitHub `PROD` environment and immediately written back whenever credentials rotate.
+Robinhood support does not require an LLM and cannot trade through the primary Robinhood brokerage account. It uses positions, buying power, and order history as durable execution state so repeated scheduled runs reconcile pending and completed orders without an application trade database. The default `shadow` mode never calls Robinhood's review or placement tools. Enable `review` mode before the final, explicit `ROBINHOOD_LIVE_TRADING=true` canary.
 
-See [Robinhood Trading MCP integration plan](docs/robinhood-mcp.md) for the exact architecture, pre-market behavior, limited-margin constraints, stateless retry algorithm, OAuth deployment requirements, code changes, tests, and rollout sequence.
+See [Robinhood Trading MCP implementation and rollout](docs/robinhood-mcp.md) for the exact architecture, pre-market behavior, limited-margin constraints, stateless retry algorithm, OAuth deployment requirements, tests, and rollout sequence.
 
 ---
 
@@ -138,6 +138,37 @@ Fund each account with at least `MAX_STOCKS × INITIAL_AMOUNT_PER_STOCK` dollars
 
 ---
 
+### Step 2b — Set up Robinhood Agentic Trading
+
+Use a dedicated Agentic account for each Robinhood profile. Never select a primary account or share one Agentic account between profiles.
+
+Run the one-time OAuth bootstrap on a desktop, writing the bundle outside the repository:
+
+```bash
+umask 077
+go run ./cmd/rebalancer robinhood-auth \
+  --output /tmp/quant-stocks-robinhood-profile-1.json
+
+gh secret set PROFILE_1_ROBINHOOD_OAUTH_STATE \
+  --env PROD < /tmp/quant-stocks-robinhood-profile-1.json
+rm -f /tmp/quant-stocks-robinhood-profile-1.json
+```
+
+Add these `PROD` variables:
+
+```text
+PROFILE_1_BROKER_TYPE=robinhood
+PROFILE_1_ROBINHOOD_ACCOUNT_ID=<dedicated Agentic account id>
+PROFILE_1_ROBINHOOD_MODE=shadow
+PROFILE_1_ROBINHOOD_LIVE_TRADING=false
+```
+
+Create a repository-scoped GitHub App with only `Metadata: read` and `Environments: write`. Store its private key as `ROBINHOOD_SECRET_WRITER_PRIVATE_KEY` and its app id as the `ROBINHOOD_SECRET_WRITER_APP_ID` variable. Scheduled runs use a short-lived installation token to persist OAuth rotations immediately; a failed write-back prevents trading.
+
+Promote one minimally funded profile through `shadow` → `review` → `ROBINHOOD_LIVE_TRADING=true`. Robinhood has no configured backtest environment in this project.
+
+---
+
 ### Step 3 — Create two GitHub Environments
 
 This project uses GitHub Environments to keep live and paper-trading credentials completely separate. Each workflow reads only from its own environment.
@@ -146,7 +177,7 @@ Go to your fork → **Settings → Environments → New environment** and create
 
 | Environment | Used by | Holds |
 | --- | --- | --- |
-| `PROD` | Weekly rebalance workflow | Live Tradier account credentials |
+| `PROD` | Weekly rebalance workflow | Live broker credentials and Robinhood OAuth state |
 | `BACKTEST` | Paper trading backtest workflow | Sandbox Tradier account credentials |
 
 > **Tip:** You can add protection rules to the `PROD` environment (e.g. require a reviewer before the workflow runs) under the environment settings.
@@ -167,6 +198,11 @@ Inside the **PROD** environment, add the following Variables and Secrets.
 | `PROFILE_N_MAX_STOCKS` | Target number of holdings | `25` |
 | `PROFILE_N_SLACK_VALUE` | Retention buffer (0 = no slack) | `5` |
 | `PROFILE_N_INITIAL_AMOUNT_PER_STOCK` | Dollar amount per organic buy slot | `5000` |
+| `PROFILE_N_BROKER_TYPE` | `tradier`, `robinhood`, or `mock` | `robinhood` |
+| `PROFILE_N_ROBINHOOD_ACCOUNT_ID` | Dedicated Agentic account id | `...` |
+| `PROFILE_N_ROBINHOOD_MODE` | `read-only`, `shadow`, or `review`; live is selected by the flag below | `shadow` |
+| `PROFILE_N_ROBINHOOD_LIVE_TRADING` | Explicit live placement gate | `false` |
+| `ROBINHOOD_SECRET_WRITER_APP_ID` | Repository-scoped GitHub App id used for OAuth write-back | `123456` |
 
 Replace `N` with `1`, `2`, `3`, etc. for each profile.
 
@@ -177,6 +213,8 @@ Replace `N` with `1`, `2`, `3`, etc. for each profile.
 | `RANKING_API_TOKEN` | QuantMyStocks API Bearer token |
 | `PROFILE_N_TRADIER_TOKEN` | Tradier Bearer token for profile N (live account) |
 | `PROFILE_N_TRADIER_ACCOUNT_ID` | Tradier account number for profile N (live account) |
+| `PROFILE_N_ROBINHOOD_OAUTH_STATE` | Complete OAuth state created by `robinhood-auth` |
+| `ROBINHOOD_SECRET_WRITER_PRIVATE_KEY` | Private key for the repository-scoped secret-writer GitHub App |
 
 **Example — PROD with two profiles (each using a separate Tradier account):**
 
@@ -284,7 +322,7 @@ Once added, every workflow run sends an email with the full rebalance or backtes
 
 ### Step 5 — Rankings are fetched automatically
 
-The rebalancer calls the QuantMyStocks leaderboard API on every run — no CSV files or manual data preparation required. It sends a POST request with the index identifier and the most recent trading day, and receives a ranked list of tickers in response. Current prices are then fetched from Tradier's quotes endpoint to calculate share counts.
+The rebalancer calls the QuantMyStocks leaderboard API on every run — no CSV files or manual data preparation required. It sends a POST request with the index identifier and the latest Sunday ranking date, and receives a ranked list of tickers in response. Current prices are then fetched from the selected broker to calculate share counts.
 
 | Index key | QuantMyStocks index |
 | --- | --- |
@@ -299,19 +337,19 @@ Rankings reflect the most recent market close (Friday's close when the Action ru
 
 ### Step 6 — Verify the workflow schedule
 
-The current Tradier adapter uses `duration=gtc` (good-till-cancelled) so an order placed before the market opens queues and fills when trading starts, rather than being rejected. The planned Robinhood adapter instead uses market + day orders and reconciles expired or failed orders on later scheduled runs.
+The Tradier adapter uses `duration=gtc` (good-till-cancelled). Robinhood uses market + day orders and reconciles expired or failed orders on later scheduled runs.
 
-The workflow runs automatically on the following schedule (all times ET):
+The workflow uses fixed UTC cron slots. Eastern times shift by one hour when daylight saving time changes.
 
-| Day | Time | Trigger |
+| Day | UTC time | Trigger |
 | --- | --- | --- |
-| Monday | 3:30 AM | 30 min before pre-market — places GTC orders ahead of trading |
-| Monday | 4:05 AM | 5 min after pre-market opens (4:00 AM) |
-| Monday | 9:35 AM | 5 min after regular market opens (9:30 AM) |
-| Tue – Fri | 4:05 AM | Pre-market open — picks up any unfilled GTC orders or new signals |
-| Tue – Fri | 9:35 AM | Regular market open |
+| Monday | 08:30 | Initial weekly reconciliation |
+| Monday | 09:05 | Reconcile broker outcomes |
+| Monday | 14:35 | Reconcile broker outcomes |
+| Tue – Fri | 09:05 | Reconcile pending, filled, and terminal orders |
+| Tue – Fri | 14:35 | Reconcile pending, filled, and terminal orders |
 
-The current Tradier idempotency guard (open-orders check) ensures that if an order was already placed in an earlier run and is still pending, it will be skipped on the next run. Robinhood requires the fuller order-history reconciliation described in the integration plan.
+Robinhood reconstructs the weekly opening portfolio and replacement budget from cycle order history and actual fills. Tradier continues to reconcile its current-session orders.
 
 You can also trigger it manually at any time from **Actions → Weekly Portfolio Rebalance → Run workflow**.
 
@@ -321,7 +359,7 @@ You can also trigger it manually at any time from **Actions → Weekly Portfolio
 
 Use the **Paper Trading Backtest** workflow to validate your strategy settings against your Tradier sandbox account before enabling live trading. See the [Paper-trading backtest](#paper-trading-backtest) section for setup instructions.
 
-The current rebalancer will never place the same order twice in one run. If a sell or buy for a ticker is already pending at Tradier (from a previous run or a manual order), it is automatically skipped.
+For Robinhood, the rebalancer reads normalized cycle order history before each run. Active orders are not duplicated, filled orders count toward the target, and rejected, canceled, or expired remainders are eligible for a later retry.
 
 ---
 
@@ -432,6 +470,8 @@ The workflow ships with slots for 5 profiles. If you need more, open `.github/wo
 
 ## Running locally
 
+Go 1.25 or newer is required by the pinned official MCP SDK.
+
 ```bash
 # Clone your fork
 git clone https://github.com/your-username/quant-stocks
@@ -459,8 +499,8 @@ PROFILE_COUNT=1 \
   RANKING_API_TOKEN="<your token>" \
   go run ./cmd/rebalancer
 
-# Run domain unit tests
-go test ./internal/domain/... -v
+# Run the full test suite
+go test ./... -v
 ```
 
 ---
@@ -470,13 +510,14 @@ go test ./internal/domain/... -v
 ```text
 quant-stocks/
 ├── cmd/rebalancer/main.go              # Entry point — reads env vars, runs profiles
-├── docs/robinhood-mcp.md               # Planned Robinhood MCP architecture and rollout
+├── docs/robinhood-mcp.md               # Robinhood MCP architecture and rollout
 ├── internal/
 │   ├── config/config.go                # Loads profiles from environment variables
 │   ├── domain/
 │   │   ├── entity.go                   # Core types (Position, Rank, Order, …)
 │   │   ├── rebalancer.go               # Pure strategy logic — no I/O
-│   │   └── rebalancer_test.go          # Unit tests for the strategy
+│   │   ├── reconcile.go                # Stateless broker-cycle reconciliation
+│   │   └── *_test.go                   # Strategy and reconciliation tests
 │   ├── port/
 │   │   ├── broker.go                   # Broker interface
 │   │   └── ranking.go                  # RankingProvider interface
@@ -484,7 +525,8 @@ quant-stocks/
 │   └── adapter/
 │       ├── broker/
 │       │   ├── tradier_broker.go       # Tradier REST API adapter
-│       │   └── mock_broker.go          # In-memory mock for testing
+│       │   ├── mock_broker.go          # In-memory mock for testing
+│       │   └── robinhood/              # MCP, OAuth, mapping, and broker adapter
 │       └── ranking/
 │           ├── quantmystocks.go        # QuantMyStocks leaderboard API adapter
 │           └── mock_ranking.go         # Hardcoded mock for local testing

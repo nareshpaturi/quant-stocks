@@ -25,7 +25,8 @@ import (
 //	  cashPerSlot = cfg.InitialAmountPerStock
 //	  Caller (config.Validate) must ensure InitialAmountPerStock > 0.
 //
-// In both cases: shares = math.Floor(cashPerSlot / candidate.Price)
+// In both cases the strategy emits a notional budget and planning price. The
+// broker review resolves whole shares from a fresh execution-time quote.
 //
 // The availableCash parameter is accepted for interface compatibility but is not
 // used in buy sizing — sell proceeds and InitialAmountPerStock drive all orders.
@@ -144,11 +145,12 @@ func Rebalance(
 				continue
 			}
 			buys = append(buys, Order{
-				Ticker:   c.Ticker,
-				Side:     OrderSideBuy,
-				Type:     OrderTypeMarket,
-				Notional: cashPerSlot,
-				Reason:   "acquire",
+				Ticker:         c.Ticker,
+				Side:           OrderSideBuy,
+				Type:           OrderTypeMarket,
+				Notional:       cashPerSlot,
+				ReferencePrice: c.Price,
+				Reason:         "acquire",
 			})
 		}
 	}
@@ -159,11 +161,12 @@ func Rebalance(
 			continue
 		}
 		buys = append(buys, Order{
-			Ticker:   c.Ticker,
-			Side:     OrderSideBuy,
-			Type:     OrderTypeMarket,
-			Notional: cfg.InitialAmountPerStock,
-			Reason:   "initial-fill",
+			Ticker:         c.Ticker,
+			Side:           OrderSideBuy,
+			Type:           OrderTypeMarket,
+			Notional:       cfg.InitialAmountPerStock,
+			ReferencePrice: c.Price,
+			Reason:         "initial-fill",
 		})
 	}
 
@@ -173,4 +176,3 @@ func Rebalance(
 		Retains: retains,
 	}
 }
-

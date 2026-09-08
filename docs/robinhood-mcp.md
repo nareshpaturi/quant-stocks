@@ -1,8 +1,8 @@
-# Robinhood Trading MCP integration plan
+# Robinhood Trading MCP implementation and rollout
 
 ## Status and decisions
 
-Robinhood support is **planned, not implemented**. The production binary currently supports Tradier and the in-memory mock broker only. Do not set `PROFILE_N_BROKER_TYPE=robinhood` until the adapter, authentication, reconciliation, and tests described here are complete.
+Robinhood support is implemented behind staged execution modes. `read-only` performs no order preflight, `shadow` checks tradability and prices without calling review or placement, `review` calls Robinhood's pre-trade review without placement, and live placement requires the separate `PROFILE_N_ROBINHOOD_LIVE_TRADING=true` gate. Complete the canary rollout and live acceptance checks below before treating it as production-proven.
 
 The agreed design is:
 
@@ -29,7 +29,7 @@ The Agentic account supports limited margin. This makes unsettled proceeds from 
 
 Each bot profile must control an isolated brokerage account. Do not point two profiles at the same Agentic account, and do not place manual trades in an account managed by the bot. Stateless reconciliation relies on the account's order history being attributable to one profile.
 
-## Proposed architecture
+## Implemented architecture
 
 ```text
 RebalanceService
@@ -43,9 +43,9 @@ RebalanceService
                  +-- MCP client + OAuth ----> Robinhood Trading MCP
 ```
 
-`RobinhoodBroker` should translate typed domain operations into MCP tool calls. The strategy and ranking provider should not know that MCP is involved.
+`RobinhoodBroker` translates typed domain operations into MCP tool calls. The strategy and ranking provider do not know that MCP is involved.
 
-Use the official Model Context Protocol Go SDK with Streamable HTTP and OAuth support. Pin a tested SDK release. The repository currently targets Go 1.22, so confirm SDK compatibility in the dependency spike and upgrade the Go toolchain deliberately if the selected release requires it.
+The implementation pins the official Model Context Protocol Go SDK v1.7.0 with Streamable HTTP and OAuth persistence support. The repository and workflows target Go 1.25, as required by that SDK release.
 
 ## Robinhood tool mapping
 
@@ -174,10 +174,9 @@ Use these non-secret environment variables:
 
 ```text
 ROBINHOOD_SECRET_WRITER_APP_ID
-ROBINHOOD_SECRET_WRITER_INSTALLATION_ID
 ```
 
-The GitHub App must be installed only on this repository and have only `Metadata: read` and repository `Secrets: write`, which are needed to replace the `PROD` environment secret. Generate a short-lived installation token during the job. Do not rely on the normal workflow `GITHUB_TOKEN` to modify Actions secrets, and do not give the trading process the GitHub App private key.
+The GitHub App must be installed only on this repository and have only `Metadata: read` and repository `Environments: write`, which are needed to replace the `PROD` environment secret. Generate a short-lived installation token during the job. Do not rely on the normal workflow `GITHUB_TOKEN` to modify Actions secrets, and do not give the trading process the GitHub App private key.
 
 The workflow must process OAuth state in this order:
 
@@ -208,7 +207,7 @@ Immediate synchronous write-back minimizes the token-rotation window, but cannot
 Robinhood requires the initial Agentic authorization on a desktop. Add a local command that uses the same Go MCP client and token-store format as production, for example:
 
 ```text
-go run ./cmd/rebalancer robinhood-auth --profile 1 --output <protected-temp-file>
+go run ./cmd/rebalancer robinhood-auth --output <protected-temp-file>
 ```
 
 After authorization succeeds, upload the file directly to `PROFILE_1_ROBINHOOD_OAUTH_STATE` with `gh secret set --env PROD`, then delete the local file. Do not copy an internal token file from Codex or another MCP client; the bot must bootstrap and persist its own client registration and OAuth grant.
@@ -235,6 +234,7 @@ PROFILE_N_BROKER_TYPE=robinhood
 PROFILE_N_ROBINHOOD_ACCOUNT_ID=<dedicated Agentic account id>
 PROFILE_N_ROBINHOOD_MCP_URL=https://agent.robinhood.com/mcp/trading
 PROFILE_N_ROBINHOOD_OAUTH_STATE_FILE=<protected runtime file populated by the workflow>
+PROFILE_N_ROBINHOOD_MODE=shadow
 PROFILE_N_ROBINHOOD_LIVE_TRADING=false
 ```
 
@@ -247,7 +247,9 @@ Requirements:
 - Validate that no two profiles use the same broker/account pair.
 - Never accept primary-account selection as an implicit fallback.
 
-## Code-change plan
+## Implemented code structure
+
+The following sections describe the boundaries implemented in `internal/domain`, `internal/port`, `internal/service`, and `internal/adapter/broker/robinhood`.
 
 ### 1. Expand broker domain data
 
@@ -303,7 +305,7 @@ Update `internal/config/config.go` to validate `robinhood` profiles and `cmd/reb
 
 ### 6. Optimize quote requests
 
-The current service requests quotes for every ranked symbol. Robinhood quotes should be requested only for held symbols, the `MAX_STOCKS + SLACK_VALUE` decision window, and immediate buy candidates, chunked to the MCP tool limit.
+The service requests quotes only for the `MAX_STOCKS + SLACK_VALUE` decision window. Held positions are priced by the adapter, and Robinhood quote requests are chunked to the 20-symbol tool limit.
 
 ### 7. Keep backtesting separate
 
