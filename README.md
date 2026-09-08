@@ -107,7 +107,7 @@ You can run as many portfolios as you want in parallel. Each one tracks a differ
 | Mock | Implemented | In-memory local development adapter |
 | Robinhood Trading MCP | Planned | Direct MCP client from Go; dedicated Agentic account; market + day orders |
 
-Robinhood cannot be selected in the current binary yet. The proposed integration does not require an LLM and does not reuse the primary Robinhood brokerage account. It uses Robinhood positions, buying power, and order history as durable execution state so repeated scheduled runs can reconcile pending and completed orders without an application trade database.
+Robinhood cannot be selected in the current binary yet. The proposed integration does not require an LLM and does not reuse the primary Robinhood brokerage account. It uses Robinhood positions, buying power, and order history as durable execution state so repeated scheduled runs can reconcile pending and completed orders without an application trade database. OAuth state is stored per profile in the protected GitHub `PROD` environment and immediately written back whenever credentials rotate.
 
 See [Robinhood Trading MCP integration plan](docs/robinhood-mcp.md) for the exact architecture, pre-market behavior, limited-margin constraints, stateless retry algorithm, OAuth deployment requirements, code changes, tests, and rollout sequence.
 

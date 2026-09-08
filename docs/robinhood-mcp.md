@@ -12,6 +12,7 @@ The agreed design is:
 - Allow pre-market runs to queue orders for the next regular trading session.
 - Run the bot multiple times per day. A rejected or canceled buy may be retried by a later run after sell proceeds become available.
 - Do not add an application database for trade state. Reconstruct the current rebalance cycle from Robinhood positions, buying power, and order history.
+- Persist OAuth credentials in the GitHub `PROD` environment and write rotated credentials back to the environment secret immediately.
 - Keep Tradier as a separate adapter and preserve its current behavior.
 
 Robinhood's official MCP endpoint is:
@@ -158,12 +159,72 @@ Broker reconciliation provides practical idempotency, but it cannot prove exactl
 
 Eliminating a trade-state database does not eliminate OAuth state. The MCP client still needs durable, encrypted storage for access and refresh credentials.
 
-The current GitHub-hosted runner is ephemeral. A production Robinhood deployment therefore needs one of these:
+### Selected design: GitHub Environment Secret with immediate write-back
 
-- a self-hosted runner with an encrypted token store and restricted filesystem permissions; or
-- a secrets manager that the workflow can read and update when OAuth credentials rotate.
+Store one complete OAuth state bundle per Robinhood profile in the protected GitHub `PROD` environment. The bundle must contain every value the selected MCP SDK needs to restart without interactive authorization, including client registration data, access token, refresh token, expiry, and granted scopes.
 
-Do not commit OAuth data, upload it as an artifact, place it in an Actions cache, or print it in logs. Bootstrap authorization interactively once, then verify that a fresh unattended process can refresh its credentials before enabling order placement. A static Tradier token-style setup should not be assumed for Robinhood OAuth.
+Use these `PROD` environment secrets:
+
+```text
+PROFILE_N_ROBINHOOD_OAUTH_STATE
+ROBINHOOD_SECRET_WRITER_PRIVATE_KEY
+```
+
+Use these non-secret environment variables:
+
+```text
+ROBINHOOD_SECRET_WRITER_APP_ID
+ROBINHOOD_SECRET_WRITER_INSTALLATION_ID
+```
+
+The GitHub App must be installed only on this repository and have only `Metadata: read` and repository `Secrets: write`, which are needed to replace the `PROD` environment secret. Generate a short-lived installation token during the job. Do not rely on the normal workflow `GITHUB_TOKEN` to modify Actions secrets, and do not give the trading process the GitHub App private key.
+
+The workflow must process OAuth state in this order:
+
+1. Materialize `PROFILE_N_ROBINHOOD_OAUTH_STATE` into a profile-specific file below `RUNNER_TEMP` with mode `0600`.
+2. Start the MCP client using that file as its token store.
+3. When the OAuth library receives any new or refreshed token state, atomically replace the temporary file.
+4. In the token-store callback, synchronously replace the corresponding `PROD` environment secret through the GitHub Actions Secrets API. Do not defer this to a post-job cleanup step.
+5. Confirm that GitHub accepted the update before allowing any order-review or order-placement call to continue.
+6. If write-back fails, fail closed: make no trades, send an alert, and leave the run unsuccessful.
+7. Delete the temporary credential file at the end of the job. Never upload it as an artifact or cache entry.
+
+The current job value does not change when the secret is replaced; the update supplies the next scheduled run. A fresh run must be tested to prove that it can load the stored bundle and refresh without interactive input.
+
+### Concurrency and crash recovery
+
+Only one job may use a Robinhood OAuth bundle at a time. Add workflow-level serialization:
+
+```yaml
+concurrency:
+  group: robinhood-agentic-prod
+  cancel-in-progress: false
+```
+
+Immediate synchronous write-back minimizes the token-rotation window, but cannot remove it completely. If the runner dies after Robinhood rotates a refresh token and before GitHub accepts the replacement secret, the stored refresh token may be invalid. The recovery path is to run the local desktop bootstrap again and replace the environment secret. Never fall back to a different Robinhood account or continue trading with partially loaded credentials.
+
+### Initial desktop bootstrap
+
+Robinhood requires the initial Agentic authorization on a desktop. Add a local command that uses the same Go MCP client and token-store format as production, for example:
+
+```text
+go run ./cmd/rebalancer robinhood-auth --profile 1 --output <protected-temp-file>
+```
+
+After authorization succeeds, upload the file directly to `PROFILE_1_ROBINHOOD_OAUTH_STATE` with `gh secret set --env PROD`, then delete the local file. Do not copy an internal token file from Codex or another MCP client; the bot must bootstrap and persist its own client registration and OAuth grant.
+
+### Security requirements
+
+- Use a private repository and restrict the `PROD` environment to the production branch.
+- Do not expose production secrets to pull-request or fork-triggered workflows.
+- Pin third-party GitHub Actions to reviewed commit SHAs.
+- Give the normal `GITHUB_TOKEN` only the permissions required by the workflow, normally `contents: read`.
+- Keep the GitHub App installation limited to this repository and its secret-writing permission.
+- Never commit OAuth data, print it, transform it into logs, or store it in an artifact or Actions cache. GitHub redaction is a backup, not the primary control.
+- Keep a separate OAuth bundle for each Agentic account/profile.
+- Mask sensitive values defensively, while assuming transformed values may not be automatically redacted.
+
+GitHub Secrets are therefore authentication persistence, not trade-state persistence. Positions and order history remain broker-owned state.
 
 ## Configuration design
 
@@ -173,7 +234,7 @@ Add broker-neutral configuration while retaining existing Tradier variables:
 PROFILE_N_BROKER_TYPE=robinhood
 PROFILE_N_ROBINHOOD_ACCOUNT_ID=<dedicated Agentic account id>
 PROFILE_N_ROBINHOOD_MCP_URL=https://agent.robinhood.com/mcp/trading
-PROFILE_N_ROBINHOOD_AUTH_STORE=<secret-manager reference or protected local path>
+PROFILE_N_ROBINHOOD_OAUTH_STATE_FILE=<protected runtime file populated by the workflow>
 PROFILE_N_ROBINHOOD_LIVE_TRADING=false
 ```
 
@@ -181,11 +242,10 @@ Requirements:
 
 - `ROBINHOOD_MCP_URL` should default to the official endpoint but remain injectable for tests.
 - `ROBINHOOD_ACCOUNT_ID` is required and must match exactly one Agentic account.
+- `ROBINHOOD_OAUTH_STATE_FILE` must point below `RUNNER_TEMP` in GitHub Actions and must never be a repository path.
 - `ROBINHOOD_LIVE_TRADING` must default to `false`. Read-only and shadow modes should work without it.
 - Validate that no two profiles use the same broker/account pair.
 - Never accept primary-account selection as an implicit fallback.
-
-Exact OAuth configuration names should be chosen after the MCP SDK proof of concept establishes its credential-store interface.
 
 ## Code-change plan
 
@@ -220,7 +280,7 @@ Tradier can implement review locally. The mock should support scripted status tr
 Add an `internal/adapter/broker/robinhood` package containing:
 
 - MCP Streamable HTTP session management
-- OAuth credential-store abstraction
+- OAuth credential-store abstraction with synchronous GitHub-secret write-back callback
 - live tool discovery/schema validation
 - typed request/response translation
 - account safety checks
@@ -263,6 +323,10 @@ Retain multiple daily attempts, but describe Robinhood attempts as day-order rec
 Implementation is ready for live rollout only when these cases pass:
 
 - MCP authentication survives a new unattended process and token refresh.
+- A rotated OAuth bundle is written to the correct `PROD` environment secret before trading continues.
+- A failed or timed-out OAuth write-back prevents order review and placement.
+- Concurrent scheduled runs cannot use the same OAuth state.
+- OAuth values do not appear in logs, artifacts, caches, or the repository.
 - A configured primary or ambiguous account is rejected.
 - Two profiles cannot select the same account.
 - Pre-market market + day orders are represented as pending and are not duplicated.
@@ -293,3 +357,6 @@ Implementation is ready for live rollout only when these cases pass:
 - [Robinhood market-order behavior](https://robinhood.com/us/en/support/articles/market-order-update/)
 - [Robinhood order types and time in force](https://robinhood.com/us/en/support/articles/order-types/)
 - [Official MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk)
+- [MCP authorization specification](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization)
+- [GitHub Actions Secrets API](https://docs.github.com/en/rest/actions/secrets)
+- [GitHub secure-use guidance](https://docs.github.com/en/actions/reference/security/secure-use)
