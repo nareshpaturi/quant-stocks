@@ -480,8 +480,11 @@ func (b *Broker) IsMarketOpen(context.Context) (bool, error) {
 func (b *Broker) checkTradability(ctx context.Context, ticker string) error {
 	args := newSchemaArgs(b.caller.InputSchema("get_equity_tradability"))
 	args.setOptional(accountAliases, b.accountID)
-	if err := args.setRequired([]string{"symbol", "ticker"}, strings.ToUpper(ticker)); err != nil {
-		return err
+	if err := args.setRequired(
+		[]string{"symbols", "tickers", "symbol", "ticker"},
+		[]string{strings.ToUpper(ticker)},
+	); err != nil {
+		return fmt.Errorf("Robinhood get_equity_tradability arguments: %w", err)
 	}
 	raw, err := b.caller.Call(ctx, "get_equity_tradability", args.values)
 	if err != nil {

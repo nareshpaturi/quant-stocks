@@ -1,6 +1,9 @@
 package service
 
 import (
+	"io"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,5 +40,35 @@ func TestDecisionTickersLimitsQuotesToThreshold(t *testing.T) {
 	got := decisionTickers(rankings, 3)
 	if len(got) != 3 || got[0] != "A" || got[2] != "C" {
 		t.Fatalf("unexpected decision tickers: %v", got)
+	}
+}
+
+func TestPrintRebalanceSummaryIncludesBroker(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := os.Stdout
+	os.Stdout = writer
+	defer func() {
+		os.Stdout = original
+		reader.Close()
+		writer.Close()
+	}()
+
+	printRebalanceSummary(
+		domain.PortfolioConfig{IndexName: "ndx", BrokerName: "robinhood"},
+		domain.RebalanceResult{}, nil, nil, nil, nil, 0,
+	)
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = original
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(output), "  Broker: robinhood\n") {
+		t.Fatalf("summary omitted broker:\n%s", output)
 	}
 }

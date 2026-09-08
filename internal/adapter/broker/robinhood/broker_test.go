@@ -53,14 +53,17 @@ func testSchemas() map[string]map[string]any {
 		return schema(props)
 	}
 	return map[string]map[string]any{
-		"get_accounts":           schema(nil),
-		"get_portfolio":          schema(account),
-		"get_equity_positions":   schema(account),
-		"get_equity_quotes":      schema(map[string]any{"symbols": map[string]any{"type": "array"}}),
-		"get_equity_orders":      schema(account),
-		"get_equity_tradability": schema(map[string]any{"symbol": stringProperty}),
-		"review_equity_order":    order(false),
-		"place_equity_order":     order(true),
+		"get_accounts":         schema(nil),
+		"get_portfolio":        schema(account),
+		"get_equity_positions": schema(account),
+		"get_equity_quotes":    schema(map[string]any{"symbols": map[string]any{"type": "array"}}),
+		"get_equity_orders":    schema(account),
+		"get_equity_tradability": schema(map[string]any{
+			"account_number": stringProperty,
+			"symbols":        map[string]any{"type": "array"},
+		}),
+		"review_equity_order": order(false),
+		"place_equity_order":  order(true),
 	}
 }
 
@@ -237,12 +240,15 @@ func TestReviewAndPlaceUseExactSameOrder(t *testing.T) {
 
 func TestShadowModeNeverCallsReviewOrPlaceTools(t *testing.T) {
 	caller := &fakeCaller{schemas: testSchemas()}
-	caller.handler = func(name string, _ map[string]any) (json.RawMessage, error) {
+	caller.handler = func(name string, args map[string]any) (json.RawMessage, error) {
 		switch name {
 		case "get_portfolio":
 			return rawJSON(`{"portfolio":{"buying_power":10000}}`), nil
 		case "get_equity_tradability":
-			return rawJSON(`{"tradable":true}`), nil
+			if args["account_number"] != "agent-1" || !reflect.DeepEqual(args["symbols"], []string{"AAPL"}) {
+				t.Fatalf("unexpected tradability arguments: %#v", args)
+			}
+			return rawJSON(`{"tradability":[{"symbol":"AAPL","tradable":true}]}`), nil
 		case "get_equity_quotes":
 			return rawJSON(`{"quotes":[{"symbol":"AAPL","last_trade_price":200}]}`), nil
 		default:

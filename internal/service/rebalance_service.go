@@ -302,6 +302,7 @@ func printRebalanceSummary(
 	fmt.Printf("\n%s\n", "════════════════════════════════════════════════════════════════")
 	fmt.Printf("  REBALANCE SUMMARY  %s  [N=%d  slack=%d  threshold=%d]\n", cfg.IndexName, n, s, threshold)
 	fmt.Printf("%s\n", "════════════════════════════════════════════════════════════════")
+	fmt.Printf("  Broker: %s\n", cfg.BrokerName)
 
 	fmt.Printf("  Ranks (%d):", len(sortedTop))
 	if len(sortedTop) == 0 {

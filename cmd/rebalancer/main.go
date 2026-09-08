@@ -66,6 +66,7 @@ func main() {
 		runner := service.NewBacktestRunner(broker, qmsProvider, logger)
 		if err := runner.Run(ctx, domain.PortfolioConfig{
 			IndexName:             profile.Index,
+			BrokerName:            profile.Broker.Type,
 			MaxStocks:             profile.MaxStocks,
 			SlackValue:            profile.SlackValue,
 			InitialAmountPerStock: profile.InitialAmountPerStock,
@@ -102,6 +103,7 @@ func main() {
 		if err := svc.Run(ctx, domain.PortfolioConfig{
 			ProfileName:           profile.Name,
 			IndexName:             profile.Index,
+			BrokerName:            profile.Broker.Type,
 			MaxStocks:             profile.MaxStocks,
 			SlackValue:            profile.SlackValue,
 			InitialAmountPerStock: profile.InitialAmountPerStock,

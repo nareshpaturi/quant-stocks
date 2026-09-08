@@ -5,6 +5,7 @@ import "time"
 // PortfolioConfig defines the rules for one rebalancing cycle.
 //
 //   - IndexName: identifies which ranking list to pull (e.g. "sp500-momentum").
+//   - BrokerName: identifies the execution broker in audit summaries.
 //   - MaxStocks: N, the target number of holdings.
 //   - SlackValue: S, how many extra ranks a held stock tolerates before forced sale.
 //     A held stock at rank R is kept if R <= N+S; sold if R > N+S.
@@ -17,6 +18,7 @@ import "time"
 type PortfolioConfig struct {
 	ProfileName           string
 	IndexName             string
+	BrokerName            string
 	MaxStocks             int
 	SlackValue            int
 	InitialAmountPerStock float64
