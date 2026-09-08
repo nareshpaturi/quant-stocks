@@ -163,7 +163,40 @@ PROFILE_1_ROBINHOOD_MODE=shadow
 PROFILE_1_ROBINHOOD_LIVE_TRADING=false
 ```
 
-Create a repository-scoped GitHub App with only `Metadata: read` and `Environments: write`. Store its private key as `ROBINHOOD_SECRET_WRITER_PRIVATE_KEY` and its app id as the `ROBINHOOD_SECRET_WRITER_APP_ID` variable. Scheduled runs use a short-lived installation token to persist OAuth rotations immediately; a failed write-back prevents trading.
+#### Create the repository-scoped secret-writer GitHub App
+
+GitHub App permissions define what an app can do; the app installation determines which repositories it can access. Register the app under the personal account or organization that owns this repository, then restrict its installation to this repository:
+
+1. Open the account's **Settings → Developer settings → GitHub Apps → New GitHub App**.
+2. Give it a unique name such as `quant-stocks-robinhood-secret-writer` and use this repository's URL as the Homepage URL.
+3. Leave callback and setup URLs blank, and disable **Webhook → Active**. This app does not authorize users or receive events.
+4. Under **Repository permissions**, select only:
+
+   - **Metadata: Read-only** (GitHub normally enables this automatically).
+   - **Environments: Read and write**. This is the permission required to update a GitHub Actions environment secret.
+
+5. Leave all other repository, organization, and account permissions set to **No access**. Under **Where can this GitHub App be installed?**, choose **Only on this account**, then create the app.
+6. Copy the numeric **App ID** from the app settings page. Do not use the Client ID.
+7. Under **Private keys**, select **Generate a private key** and securely save the downloaded PEM file. GitHub retains only the public half of this key.
+8. Open the app's **Install App** page, choose the repository owner, select **Only select repositories**, select this repository, and install the app. This selection makes the installation repository-scoped.
+9. In this repository, open **Settings → Environments → PROD** and add:
+
+   - Variable `ROBINHOOD_SECRET_WRITER_APP_ID` containing the numeric App ID.
+   - Secret `ROBINHOOD_SECRET_WRITER_PRIVATE_KEY` containing the complete PEM, including its `BEGIN` and `END` lines.
+
+The environment values can also be added with the GitHub CLI:
+
+```bash
+gh variable set ROBINHOOD_SECRET_WRITER_APP_ID \
+  --env PROD --body '123456'
+
+gh secret set ROBINHOOD_SECRET_WRITER_PRIVATE_KEY \
+  --env PROD < /path/to/github-app-private-key.pem
+```
+
+Never commit the PEM file. Remove it from the local machine after storing it in the `PROD` environment, or retain it only in an appropriate secrets vault. See GitHub's documentation for [registering a GitHub App](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app), [installing a GitHub App](https://docs.github.com/en/apps/using-github-apps/installing-a-github-app-from-a-third-party), and [managing private keys](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps).
+
+Scheduled runs use the App ID and private key to create a short-lived installation token and persist OAuth rotations immediately. A failed write-back prevents trading.
 
 Promote one minimally funded profile through `shadow` → `review` → `ROBINHOOD_LIVE_TRADING=true`. Robinhood has no configured backtest environment in this project.
 
