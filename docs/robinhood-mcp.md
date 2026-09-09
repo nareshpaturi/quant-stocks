@@ -59,7 +59,7 @@ Robinhood publishes these relevant equity tools. Inspect their live schemas duri
 | Fetch prices | `get_equity_quotes` | The tool accepts up to 20 symbols; request only required symbols and chunk larger batches. |
 | Reconstruct order state | `get_equity_orders` | Read current and historical orders for the active cycle, including terminal and partial states. |
 | Check whether a symbol can trade | `get_equity_tradability` | Fail or skip before constructing an order for an unsupported symbol. |
-| Validate an order | `review_equity_order` | Mandatory preflight before placement; validate side, quantity, order type, duration, and estimated cost. |
+| Validate an order | `review_equity_order` | Mandatory preflight before placement; validate side, dollar amount or quantity, order type, duration, and estimated cost. |
 | Submit an order | `place_equity_order` | Place only the exact reviewed market + day order. |
 | Cancel an order | `cancel_equity_order` | Administrative/recovery path; normal reconciliation should not cancel healthy pending orders. |
 
@@ -140,7 +140,7 @@ For each profile, execute this sequence:
    - Allocate only the non-negative remaining budget across deterministic, unfilled replacement candidates.
 8. Reconcile organic buys separately. A slot that was empty before this cycle uses `INITIAL_AMOUNT_PER_STOCK`; a slot created by a cycle sell uses only the replacement budget.
 9. Limit every buy by current broker buying power and Robinhood's review estimate/reserve. An unaffordable buy is skipped for this run, not converted into margin borrowing. A terminally failed buy becomes retryable after a funding condition changes.
-10. For each new order, check tradability, fetch a current quote, round to the strategy's whole-share quantity, call `review_equity_order`, validate the returned review, and then call `place_equity_order`.
+10. For each new order, check tradability and fractional eligibility, then fetch a current quote. Prefer a dollar-based buy when both order schemas expose `dollar_amount`; otherwise derive a fractional quantity rounded down to six decimal places. Call `review_equity_order`, validate the returned review, and submit the identical representation to `place_equity_order`.
 11. Refresh broker order state after submissions and emit a cycle summary. Return a non-zero result or alert when an order has an unknown outcome.
 
 ### Why completed sell history is required
@@ -338,6 +338,7 @@ Implementation is ready for live rollout only when these cases pass:
 - Actual average fill prices, not pre-trade quote estimates, determine realized sell proceeds.
 - A placement timeout followed by a discoverable broker order does not create a duplicate.
 - Unknown statuses and ambiguous placement outcomes fail closed.
+- Dollar-based buys preserve the strategy notional through review and placement; schemas without dollar orders fall back to an explicitly eligible fractional quantity.
 - Quote lists larger than 20 symbols are chunked.
 - The review payload exactly matches the placed order.
 - Insufficient buying power skips the buy and leaves it eligible for a later run.

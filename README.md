@@ -30,7 +30,9 @@ After deciding what to sell, the rebalancer fills open slots by buying the highe
 | **Sell-funded** | Freed by a sell this cycle | Sell proceeds ÷ number of sells |
 | **Organic** | Was already empty (portfolio undersized) | `INITIAL_AMOUNT_PER_STOCK` per slot |
 
-Share counts are always rounded down to whole shares.
+Tradier buys are rounded down to whole shares. Robinhood buys use dollar-based
+orders when the live MCP schema supports them; otherwise the adapter submits a
+fractional-share quantity after verifying that the symbol supports fractions.
 
 **Ongoing rebalance example** — `MAX_STOCKS=5`, `SLACK_VALUE=2` (threshold = 7):
 

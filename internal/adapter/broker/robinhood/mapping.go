@@ -9,6 +9,7 @@ import (
 )
 
 var accountAliases = []string{"account_id", "accountId", "account_number", "accountNumber"}
+var dollarAmountAliases = []string{"dollar_amount", "dollarAmount", "notional_amount", "notionalAmount", "notional"}
 
 type schemaArgs struct {
 	properties map[string]any
@@ -81,7 +82,7 @@ func coerceStringEnum(definition map[string]any, value string) string {
 	return value
 }
 
-func orderArguments(schema map[string]any, accountID string, orderFields map[string]any, reviewID string) (map[string]any, error) {
+func orderArguments(schema map[string]any, accountID string, orderFields map[string]any, reviewID string, dollarBased bool) (map[string]any, error) {
 	args := newSchemaArgs(schema)
 	accountSet := args.setOptional(accountAliases, accountID)
 	reviewIDSet := false
@@ -101,7 +102,7 @@ func orderArguments(schema map[string]any, accountID string, orderFields map[str
 		if !accountSet {
 			accountSet = nested.setOptional(accountAliases, accountID)
 		}
-		if err := populateOrderFields(nested, orderFields); err != nil {
+		if err := populateOrderFields(nested, orderFields, dollarBased); err != nil {
 			return nil, err
 		}
 		args.values[containerName] = nested.values
@@ -110,7 +111,7 @@ func orderArguments(schema map[string]any, accountID string, orderFields map[str
 	if reviewIDSet && !hasAnyProperty(args.properties, []string{"symbol", "ticker"}) {
 		return args.values, nil
 	}
-	if err := populateOrderFields(args, orderFields); err != nil {
+	if err := populateOrderFields(args, orderFields, dollarBased); err != nil {
 		return nil, err
 	}
 	return args.values, nil
@@ -125,14 +126,13 @@ func hasAnyProperty(properties map[string]any, aliases []string) bool {
 	return false
 }
 
-func populateOrderFields(args *schemaArgs, fields map[string]any) error {
+func populateOrderFields(args *schemaArgs, fields map[string]any, dollarBased bool) error {
 	required := []struct {
 		aliases []string
 		key     string
 	}{
 		{[]string{"symbol", "ticker"}, "symbol"},
 		{[]string{"side"}, "side"},
-		{[]string{"quantity", "qty", "shares"}, "quantity"},
 		{[]string{"order_type", "orderType", "type"}, "order_type"},
 		{[]string{"time_in_force", "timeInForce", "duration"}, "duration"},
 	}
@@ -141,6 +141,14 @@ func populateOrderFields(args *schemaArgs, fields map[string]any) error {
 			return err
 		}
 	}
+	if dollarBased {
+		if err := args.setRequired(dollarAmountAliases, fields["dollar_amount"]); err != nil {
+			return err
+		}
+	} else if err := args.setRequired([]string{"quantity", "qty", "shares"}, fields["quantity"]); err != nil {
+		return err
+	}
+	args.setOptional([]string{"market_hours", "marketHours"}, fields["market_hours"])
 	args.setOptional([]string{"client_order_id", "clientOrderId", "client_order_identifier"}, fields["client_order_id"])
 	return nil
 }

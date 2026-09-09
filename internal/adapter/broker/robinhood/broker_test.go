@@ -44,8 +44,9 @@ func testSchemas() map[string]map[string]any {
 	order := func(includeReview bool) map[string]any {
 		props := map[string]any{
 			"account_id": stringProperty, "symbol": stringProperty, "side": stringProperty,
-			"quantity": numberProperty, "order_type": stringProperty,
-			"time_in_force": stringProperty, "client_order_id": stringProperty,
+			"quantity": numberProperty, "dollar_amount": stringProperty,
+			"order_type": stringProperty, "time_in_force": stringProperty,
+			"market_hours": stringProperty, "client_order_id": stringProperty,
 		}
 		if includeReview {
 			props["review_id"] = stringProperty
@@ -193,11 +194,11 @@ func TestReviewAndPlaceUseExactSameOrder(t *testing.T) {
 		case "get_portfolio":
 			return rawJSON(`{"portfolio":{"buying_power":10000}}`), nil
 		case "get_equity_tradability":
-			return rawJSON(`{"tradable":true}`), nil
+			return rawJSON(`{"tradable":true,"fractional_tradability":"tradable"}`), nil
 		case "get_equity_quotes":
 			return rawJSON(`{"quotes":[{"symbol":"AAPL","last_trade_price":"190"}]}`), nil
 		case "review_equity_order":
-			return rawJSON(`{"review":{"review_id":"review-1","approved":true,"symbol":"AAPL","side":"buy","quantity":5,"estimated_cost":950}}`), nil
+			return rawJSON(`{"review":{"review_id":"review-1","approved":true,"symbol":"AAPL","side":"buy","dollar_amount":1000,"quantity":5,"estimated_cost":950}}`), nil
 		case "place_equity_order":
 			return rawJSON(`{"order":{"order_id":"order-1","status":"queued","symbol":"AAPL","side":"buy","quantity":5}}`), nil
 		default:
@@ -211,6 +212,11 @@ func TestReviewAndPlaceUseExactSameOrder(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	tampered := review
+	tampered.Order.Notional++
+	if _, err := broker.PlaceOrder(context.Background(), tampered); err == nil {
+		t.Fatal("placement accepted a changed dollar amount")
 	}
 	placed, err := broker.PlaceOrder(context.Background(), review)
 	if err != nil {
@@ -228,10 +234,13 @@ func TestReviewAndPlaceUseExactSameOrder(t *testing.T) {
 			placeArgs = call.args
 		}
 	}
-	for _, key := range []string{"account_id", "symbol", "side", "quantity", "order_type", "time_in_force", "client_order_id"} {
+	for _, key := range []string{"account_id", "symbol", "side", "dollar_amount", "order_type", "time_in_force", "market_hours", "client_order_id"} {
 		if !reflect.DeepEqual(reviewArgs[key], placeArgs[key]) {
 			t.Fatalf("%s differs: review=%v place=%v", key, reviewArgs[key], placeArgs[key])
 		}
+	}
+	if _, exists := reviewArgs["quantity"]; exists {
+		t.Fatalf("dollar-based review unexpectedly contained quantity: %v", reviewArgs)
 	}
 	if placeArgs["review_id"] != "review-1" {
 		t.Fatalf("review id not passed: %v", placeArgs)
@@ -250,7 +259,7 @@ func TestShadowModeNeverCallsReviewOrPlaceTools(t *testing.T) {
 			}
 			return rawJSON(`{"data":{"results":[{"symbol":"AAPL","state":"active","tradeable":true,"fractional_tradability":"tradable","all_day_tradability":"tradable","account_type_tradabilities":[{"account_type":"individual","account_type_tradability":"tradable"}]}]}}`), nil
 		case "get_equity_quotes":
-			return rawJSON(`{"data":{"results":[{"quote":{"symbol":"AAPL","last_trade_price":200}}]}}`), nil
+			return rawJSON(`{"data":{"results":[{"quote":{"symbol":"AAPL","last_trade_price":1800}}]}}`), nil
 		default:
 			return nil, fmt.Errorf("unsafe tool called in shadow mode: %s", name)
 		}
@@ -263,6 +272,9 @@ func TestShadowModeNeverCallsReviewOrPlaceTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if review.Order.Shares != 0.555555 || review.EstimatedNotional != 1000 {
+		t.Fatalf("unexpected fractional review: %+v", review)
+	}
 	placed, err := broker.PlaceOrder(context.Background(), review)
 	if err != nil {
 		t.Fatal(err)
@@ -274,6 +286,102 @@ func TestShadowModeNeverCallsReviewOrPlaceTools(t *testing.T) {
 		if call.name == "review_equity_order" || call.name == "place_equity_order" {
 			t.Fatalf("unsafe call in shadow mode: %s", call.name)
 		}
+	}
+}
+
+func TestReviewFallsBackToFractionalQuantity(t *testing.T) {
+	schemas := testSchemas()
+	for _, tool := range []string{"review_equity_order", "place_equity_order"} {
+		delete(schemas[tool]["properties"].(map[string]any), "dollar_amount")
+	}
+	caller := &fakeCaller{schemas: schemas}
+	caller.handler = func(name string, args map[string]any) (json.RawMessage, error) {
+		switch name {
+		case "get_equity_tradability":
+			return rawJSON(`{"data":{"results":[{"symbol":"SNDK","state":"active","tradeable":true,"fractional_tradability":"tradable","account_type_tradabilities":[{"account_type":"individual","account_type_tradability":"tradable"}]}]}}`), nil
+		case "get_equity_quotes":
+			return rawJSON(`{"data":{"results":[{"quote":{"symbol":"SNDK","last_trade_price":1800}}]}}`), nil
+		case "review_equity_order":
+			if got := args["quantity"]; got != 0.555555 {
+				t.Fatalf("quantity = %#v, want 0.555555", got)
+			}
+			if _, exists := args["dollar_amount"]; exists {
+				t.Fatalf("unsupported dollar_amount was sent: %#v", args)
+			}
+			return rawJSON(`{"review":{"approved":true,"symbol":"SNDK","side":"buy","quantity":0.555555,"estimated_cost":999.999}}`), nil
+		case "get_portfolio":
+			return rawJSON(`{"portfolio":{"buying_power":10000}}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected call %s", name)
+		}
+	}
+	broker := newWithCaller(caller, "agent-1", false)
+	broker.mode = ModeReview
+	review, err := broker.ReviewOrder(context.Background(), domain.Order{
+		Ticker: "SNDK", Side: domain.OrderSideBuy, Type: domain.OrderTypeMarket,
+		Notional: 1000, ClientOrderID: "client-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.Order.Shares != 0.555555 {
+		t.Fatalf("shares = %.8f, want 0.555555", review.Order.Shares)
+	}
+}
+
+func TestReviewRejectsUnsupportedFractionalBuy(t *testing.T) {
+	caller := &fakeCaller{schemas: testSchemas()}
+	caller.handler = func(name string, _ map[string]any) (json.RawMessage, error) {
+		switch name {
+		case "get_equity_tradability":
+			return rawJSON(`{"tradable":true,"fractional_tradability":"untradable"}`), nil
+		case "get_equity_quotes":
+			return rawJSON(`{"quotes":[{"symbol":"OTC","last_trade_price":1800}]}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected call %s", name)
+		}
+	}
+	broker := newWithCaller(caller, "agent-1", false)
+	_, err := broker.ReviewOrder(context.Background(), domain.Order{
+		Ticker: "OTC", Side: domain.OrderSideBuy, Type: domain.OrderTypeMarket, Notional: 1000,
+	})
+	if err == nil {
+		t.Fatal("fractional buy was accepted without broker eligibility")
+	}
+}
+
+func TestShadowReviewAllowsFractionalPositionClosingSell(t *testing.T) {
+	caller := &fakeCaller{schemas: testSchemas()}
+	caller.handler = func(name string, _ map[string]any) (json.RawMessage, error) {
+		switch name {
+		case "get_equity_tradability":
+			return rawJSON(`{"tradable":true,"fractional_tradability":"position_closing_only"}`), nil
+		case "get_equity_quotes":
+			return rawJSON(`{"quotes":[{"symbol":"AAPL","last_trade_price":1800}]}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected call %s", name)
+		}
+	}
+	broker := newWithCaller(caller, "agent-1", false)
+	review, err := broker.ReviewOrder(context.Background(), domain.Order{
+		Ticker: "AAPL", Side: domain.OrderSideSell, Type: domain.OrderTypeMarket, Shares: 0.555555,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.Order.Shares != 0.555555 {
+		t.Fatalf("shares = %.8f, want 0.555555", review.Order.Shares)
+	}
+}
+
+func TestDecodeBrokerOrderReadsNestedDollarAmount(t *testing.T) {
+	items, err := records(rawJSON(`{"order":{"order_id":"order-1","symbol":"AAPL","side":"buy","state":"queued","quantity":"0.5","dollar_based_amount":{"amount":"1000","currency_code":"USD"}}}`), "order")
+	if err != nil || len(items) != 1 {
+		t.Fatalf("decode records: items=%v err=%v", items, err)
+	}
+	order := decodeBrokerOrder(items[0], "agent-1", "cycle")
+	if order.EstimatedNotional != 1000 {
+		t.Fatalf("estimated notional = %.2f, want 1000", order.EstimatedNotional)
 	}
 }
 
@@ -312,11 +420,11 @@ func TestReviewFailsWhenBrokerEstimateExceedsFreshBuyingPower(t *testing.T) {
 	caller.handler = func(name string, _ map[string]any) (json.RawMessage, error) {
 		switch name {
 		case "get_equity_tradability":
-			return rawJSON(`{"tradable":true}`), nil
+			return rawJSON(`{"tradable":true,"fractional_tradability":"tradable"}`), nil
 		case "get_equity_quotes":
 			return rawJSON(`{"quotes":[{"symbol":"AAPL","last_trade_price":200}]}`), nil
 		case "review_equity_order":
-			return rawJSON(`{"review":{"approved":true,"symbol":"AAPL","side":"buy","quantity":5,"estimated_cost":1050}}`), nil
+			return rawJSON(`{"review":{"approved":true,"symbol":"AAPL","side":"buy","dollar_amount":1000,"quantity":5,"estimated_cost":1050}}`), nil
 		case "get_portfolio":
 			return rawJSON(`{"portfolio":{"buying_power":1000}}`), nil
 		default:

@@ -26,7 +26,7 @@ import (
 //	  Caller (config.Validate) must ensure InitialAmountPerStock > 0.
 //
 // In both cases the strategy emits a notional budget and planning price. The
-// broker review resolves whole shares from a fresh execution-time quote.
+// broker review resolves the broker-supported order form from a fresh quote.
 //
 // The availableCash parameter is accepted for interface compatibility but is not
 // used in buy sizing — sell proceeds and InitialAmountPerStock drive all orders.

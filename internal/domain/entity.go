@@ -73,7 +73,7 @@ const (
 //
 //   - For sells: Shares is the full position quantity; Notional is zero.
 //   - For buys: Notional is the dollar amount to spend; the broker fetches a
-//     fresh quote at execution time and derives quantity = floor(Notional/livePrice).
+//     fresh quote and uses its supported dollar-order or share-quantity form.
 //   - Type is the order execution type (e.g. OrderTypeMarket).
 //   - Reason is a human-readable label for logging ("liquidate", "acquire", etc.).
 type Order struct {

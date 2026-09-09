@@ -15,6 +15,8 @@ import (
 
 const DefaultMCPURL = "https://agent.robinhood.com/mcp/trading"
 
+const fractionalShareScale = 1_000_000
+
 var ErrAmbiguousPlacement = errors.New("Robinhood order placement outcome is ambiguous")
 
 type ExecutionMode string
@@ -155,12 +157,16 @@ func explicitAgenticClassification(account map[string]any) bool {
 }
 
 func schemaHasAccountSelector(schema map[string]any) bool {
+	return schemaHasOrderField(schema, accountAliases)
+}
+
+func schemaHasOrderField(schema map[string]any, aliases []string) bool {
 	properties, _ := schema["properties"].(map[string]any)
-	if hasAnyProperty(properties, accountAliases) {
+	if hasAnyProperty(properties, aliases) {
 		return true
 	}
 	for _, property := range properties {
-		if nested, ok := property.(map[string]any); ok && schemaHasAccountSelector(nested) {
+		if nested, ok := property.(map[string]any); ok && schemaHasOrderField(nested, aliases) {
 			return true
 		}
 	}
@@ -370,8 +376,11 @@ func (b *Broker) ReviewOrder(ctx context.Context, order domain.Order) (domain.Or
 		return domain.OrderReview{}, fmt.Errorf("Robinhood strategy orders must use day duration, got %q", order.Duration)
 	}
 	price := order.ReferencePrice
+	tradability := equityTradability{}
 	if b.mode != ModeReadOnly {
-		if err := b.checkTradability(ctx, order.Ticker); err != nil {
+		var err error
+		tradability, err = b.getTradability(ctx, order.Ticker)
+		if err != nil {
 			return domain.OrderReview{}, err
 		}
 		quotes, err := b.GetQuotes(ctx, []string{order.Ticker})
@@ -383,26 +392,34 @@ func (b *Broker) ReviewOrder(ctx context.Context, order domain.Order) (domain.Or
 	if price <= 0 {
 		return domain.OrderReview{}, fmt.Errorf("Robinhood returned no quote for %s", order.Ticker)
 	}
+	reviewSchema := b.caller.InputSchema("review_equity_order")
+	placeSchema := b.caller.InputSchema("place_equity_order")
+	dollarBased := order.Side == domain.OrderSideBuy && order.Notional > 0 &&
+		schemaHasOrderField(reviewSchema, dollarAmountAliases) && schemaHasOrderField(placeSchema, dollarAmountAliases)
 	if order.Side == domain.OrderSideBuy {
-		order.Shares = math.Floor(order.Notional / price)
-	} else if order.Shares != math.Floor(order.Shares) {
-		return domain.OrderReview{}, fmt.Errorf("Robinhood strategy orders require whole shares, got %.8f", order.Shares)
+		if order.Notional < 1 {
+			return domain.OrderReview{}, fmt.Errorf("Robinhood fractional buy for %s must be at least $1", order.Ticker)
+		}
+		order.Shares = floorFractionalShares(order.Notional / price)
 	}
-	if order.Shares < 1 {
-		return domain.OrderReview{}, fmt.Errorf("order for %s buys or sells no whole shares", order.Ticker)
+	if order.Shares <= 0 {
+		return domain.OrderReview{}, fmt.Errorf("order for %s resolves to zero shares", order.Ticker)
+	}
+	if b.mode != ModeReadOnly && (dollarBased || !isWholeShares(order.Shares)) && !tradability.allowsFractional(order.Side) {
+		return domain.OrderReview{}, tradability.fractionalError(order.Ticker, order.Side)
 	}
 	if b.mode == ModeReadOnly || b.mode == ModeShadow {
-		estimated := order.Shares * price
+		estimated := estimatedOrderNotional(order, price)
 		if err := b.ensureAffordable(ctx, order, estimated); err != nil {
 			return domain.OrderReview{}, err
 		}
 		return domain.OrderReview{
 			Order: order, EstimatedPrice: price, EstimatedNotional: estimated, Approved: true,
-			BrokerData: reviewedPayload{fingerprint: orderFingerprint(order), reviewedAt: b.now()},
+			BrokerData: reviewedPayload{fingerprint: orderFingerprint(order), reviewedAt: b.now(), dollarBased: dollarBased},
 		}, nil
 	}
 	fields := canonicalOrderFields(order)
-	args, err := orderArguments(b.caller.InputSchema("review_equity_order"), b.accountID, fields, "")
+	args, err := orderArguments(reviewSchema, b.accountID, fields, "", dollarBased)
 	if err != nil {
 		return domain.OrderReview{}, fmt.Errorf("Robinhood review schema: %w", err)
 	}
@@ -418,12 +435,15 @@ func (b *Broker) ReviewOrder(ctx context.Context, order domain.Order) (domain.Or
 	if approved, known := boolField(record, "approved", "can_place", "canPlace", "valid", "is_valid", "isValid"); known && !approved {
 		return domain.OrderReview{}, fmt.Errorf("Robinhood rejected order review for %s", order.Ticker)
 	}
-	if err := validateReviewEcho(record, order, b.accountID); err != nil {
+	if err := validateReviewEcho(record, order, b.accountID, dollarBased); err != nil {
 		return domain.OrderReview{}, err
 	}
 	estimated := floatField(record, "estimated_cost", "estimatedCost", "estimated_notional", "estimatedNotional", "notional")
 	if estimated <= 0 {
-		estimated = order.Shares * price
+		estimated = estimatedOrderNotional(order, price)
+	}
+	if dollarBased && estimated < order.Notional {
+		estimated = order.Notional
 	}
 	if err := b.ensureAffordable(ctx, order, estimated); err != nil {
 		return domain.OrderReview{}, err
@@ -432,7 +452,7 @@ func (b *Broker) ReviewOrder(ctx context.Context, order domain.Order) (domain.Or
 		Order: order, ReviewID: stringField(record, "review_id", "reviewId", "order_review_id", "orderReviewId"),
 		EstimatedPrice: price, EstimatedNotional: estimated,
 		Warnings: stringSliceField(record, "warnings", "alerts", "messages"), Approved: true,
-		BrokerData: reviewedPayload{fingerprint: orderFingerprint(order), reviewedAt: b.now()},
+		BrokerData: reviewedPayload{fingerprint: orderFingerprint(order), reviewedAt: b.now(), dollarBased: dollarBased},
 	}, nil
 }
 
@@ -448,7 +468,8 @@ func (b *Broker) PlaceOrder(ctx context.Context, review domain.OrderReview) (dom
 		b.mu.Unlock()
 		return order, nil
 	}
-	args, err := orderArguments(b.caller.InputSchema("place_equity_order"), b.accountID, canonicalOrderFields(review.Order), review.ReviewID)
+	args, err := orderArguments(b.caller.InputSchema("place_equity_order"), b.accountID,
+		canonicalOrderFields(review.Order), review.ReviewID, payload.dollarBased)
 	if err != nil {
 		return domain.BrokerOrder{}, fmt.Errorf("Robinhood place schema: %w", err)
 	}
@@ -478,25 +499,30 @@ func (b *Broker) IsMarketOpen(context.Context) (bool, error) {
 }
 
 func (b *Broker) checkTradability(ctx context.Context, ticker string) error {
+	_, err := b.getTradability(ctx, ticker)
+	return err
+}
+
+func (b *Broker) getTradability(ctx context.Context, ticker string) (equityTradability, error) {
 	args := newSchemaArgs(b.caller.InputSchema("get_equity_tradability"))
 	args.setOptional(accountAliases, b.accountID)
 	if err := args.setRequired(
 		[]string{"symbols", "tickers", "symbol", "ticker"},
 		[]string{strings.ToUpper(ticker)},
 	); err != nil {
-		return fmt.Errorf("Robinhood get_equity_tradability arguments: %w", err)
+		return equityTradability{}, fmt.Errorf("Robinhood get_equity_tradability arguments: %w", err)
 	}
 	raw, err := b.caller.Call(ctx, "get_equity_tradability", args.values)
 	if err != nil {
-		return fmt.Errorf("Robinhood get_equity_tradability: %w", err)
+		return equityTradability{}, fmt.Errorf("Robinhood get_equity_tradability: %w", err)
 	}
 	items, err := records(raw, "tradability", "tradabilities", "result", "results")
 	if err != nil || len(items) == 0 {
-		return errors.New("Robinhood tradability response was empty")
+		return equityTradability{}, errors.New("Robinhood tradability response was empty")
 	}
 	record, err := tradabilityRecord(items, ticker)
 	if err != nil {
-		return err
+		return equityTradability{}, err
 	}
 	return validateTradability(record, ticker)
 }
@@ -518,7 +544,8 @@ func tradabilityRecord(items []map[string]any, ticker string) (map[string]any, e
 	return nil, fmt.Errorf("Robinhood tradability response matched %d records for %s", len(matches), wanted)
 }
 
-func validateTradability(record map[string]any, ticker string) error {
+func validateTradability(record map[string]any, ticker string) (equityTradability, error) {
+	tradability := decodeEquityTradability(record)
 	// Robinhood's current response spells this field "tradeable" and nests
 	// symbol records under data.results. Keep the older aliases for compatible
 	// MCP implementations, but require an explicit affirmative value.
@@ -527,26 +554,70 @@ func validateTradability(record map[string]any, ticker string) error {
 		"is_tradable", "isTradable", "can_trade", "canTrade",
 	)
 	if tradeableKnown && !tradeable {
-		return fmt.Errorf("Robinhood reports %s is not tradable", ticker)
+		return equityTradability{}, fmt.Errorf("Robinhood reports %s is not tradable", ticker)
 	}
 
 	state := strings.ToLower(stringField(record, "state", "status", "tradability"))
 	if state != "" && state != "tradable" && state != "active" {
-		return fmt.Errorf("Robinhood reports %s has tradability state %q", ticker, state)
+		return equityTradability{}, fmt.Errorf("Robinhood reports %s has tradability state %q", ticker, state)
 	}
 
 	accountTradeable, accountStatusKnown := accountTypeTradeable(record)
 	if accountStatusKnown && !accountTradeable {
-		return fmt.Errorf("Robinhood reports %s is not tradable for this account type", ticker)
+		return equityTradability{}, fmt.Errorf("Robinhood reports %s is not tradable for this account type", ticker)
 	}
 	if tradeableKnown && tradeable {
-		return nil
+		return tradability, nil
 	}
 	if accountStatusKnown && accountTradeable && (state == "active" || state == "tradable") {
-		return nil
+		return tradability, nil
 	}
-	return fmt.Errorf("Robinhood did not explicitly confirm %s is tradable (response fields: %s)",
+	return equityTradability{}, fmt.Errorf("Robinhood did not explicitly confirm %s is tradable (response fields: %s)",
 		ticker, strings.Join(sortedKeys(record), ", "))
+}
+
+type equityTradability struct {
+	fractionalStatus string
+	fractionalKnown  bool
+}
+
+func decodeEquityTradability(record map[string]any) equityTradability {
+	status := strings.ToLower(stringField(record, "fractional_tradability", "fractionalTradability"))
+	if status != "" {
+		return equityTradability{fractionalStatus: status, fractionalKnown: true}
+	}
+	allowed, known := boolField(record,
+		"fractional_tradeable", "fractionalTradeable", "fractional_tradable", "fractionalTradable",
+		"supports_fractional", "supportsFractional",
+	)
+	if !known {
+		return equityTradability{}
+	}
+	if allowed {
+		status = "tradable"
+	} else {
+		status = "untradable"
+	}
+	return equityTradability{fractionalStatus: status, fractionalKnown: true}
+}
+
+func (t equityTradability) allowsFractional(side domain.OrderSide) bool {
+	if !t.fractionalKnown {
+		return false
+	}
+	if t.fractionalStatus == "tradable" {
+		return true
+	}
+	return side == domain.OrderSideSell &&
+		(t.fractionalStatus == "position_closing_only" || t.fractionalStatus == "closing_only")
+}
+
+func (t equityTradability) fractionalError(ticker string, side domain.OrderSide) error {
+	if !t.fractionalKnown {
+		return fmt.Errorf("Robinhood did not explicitly confirm %s supports fractional %s orders", ticker, side)
+	}
+	return fmt.Errorf("Robinhood reports %s fractional tradability is %q for a %s order",
+		ticker, t.fractionalStatus, side)
 }
 
 func accountTypeTradeable(record map[string]any) (bool, bool) {
@@ -579,22 +650,39 @@ func sortedKeys(record map[string]any) []string {
 type reviewedPayload struct {
 	fingerprint string
 	reviewedAt  time.Time
+	dollarBased bool
 }
 
 func canonicalOrderFields(order domain.Order) map[string]any {
 	return map[string]any{
 		"symbol": strings.ToUpper(order.Ticker), "side": string(order.Side),
-		"quantity": order.Shares, "order_type": string(order.Type),
-		"duration": string(order.Duration), "client_order_id": order.ClientOrderID,
+		"quantity": order.Shares, "dollar_amount": order.Notional,
+		"order_type": string(order.Type), "duration": string(order.Duration),
+		"market_hours": "regular_hours", "client_order_id": order.ClientOrderID,
 	}
 }
 
-func orderFingerprint(order domain.Order) string {
-	return fmt.Sprintf("%s|%s|%s|%s|%.8f|%s|%s", strings.ToUpper(order.Ticker), order.Side,
-		order.Type, order.Duration, order.Shares, order.CycleID, order.ClientOrderID)
+func floorFractionalShares(shares float64) float64 {
+	return math.Floor(shares*fractionalShareScale) / fractionalShareScale
 }
 
-func validateReviewEcho(record map[string]any, order domain.Order, accountID string) error {
+func isWholeShares(shares float64) bool {
+	return math.Abs(shares-math.Round(shares)) < 1e-9
+}
+
+func estimatedOrderNotional(order domain.Order, price float64) float64 {
+	if order.Side == domain.OrderSideBuy && order.Notional > 0 {
+		return order.Notional
+	}
+	return order.Shares * price
+}
+
+func orderFingerprint(order domain.Order) string {
+	return fmt.Sprintf("%s|%s|%s|%s|%.8f|%.2f|%s|%s", strings.ToUpper(order.Ticker), order.Side,
+		order.Type, order.Duration, order.Shares, order.Notional, order.CycleID, order.ClientOrderID)
+}
+
+func validateReviewEcho(record map[string]any, order domain.Order, accountID string, dollarBased bool) error {
 	if account := stringField(record, accountAliases...); account != "" && account != accountID {
 		return fmt.Errorf("Robinhood review changed account from %s to %s", accountID, account)
 	}
@@ -604,8 +692,17 @@ func validateReviewEcho(record map[string]any, order domain.Order, accountID str
 	if side := strings.ToLower(stringField(record, "side")); side != "" && side != string(order.Side) {
 		return fmt.Errorf("Robinhood review changed side from %s to %s", order.Side, side)
 	}
-	if quantity := floatField(record, "quantity", "qty", "shares"); quantity > 0 && math.Abs(quantity-order.Shares) > 1e-9 {
+	if quantity := floatField(record, "quantity", "qty", "shares"); !dollarBased && quantity > 0 && math.Abs(quantity-order.Shares) > 1e-9 {
 		return fmt.Errorf("Robinhood review changed quantity from %.8f to %.8f", order.Shares, quantity)
+	}
+	if dollarBased {
+		amount := explicitDollarAmountField(record)
+		if amount <= 0 {
+			return errors.New("Robinhood review omitted the requested dollar amount")
+		}
+		if math.Abs(amount-order.Notional) > 0.01 {
+			return fmt.Errorf("Robinhood review changed dollar amount from %.2f to %.2f", order.Notional, amount)
+		}
 	}
 	orderType := strings.ToLower(stringField(record, "order_type", "orderType"))
 	if orderType == "" {
@@ -655,8 +752,12 @@ func (b *Broker) resolveAmbiguousPlacement(ctx context.Context, review domain.Or
 			matches = append(matches, order)
 			continue
 		}
-		if order.Ticker == review.Order.Ticker && order.Side == review.Order.Side &&
-			math.Abs(order.RequestedShares-review.Order.Shares) < 1e-9 && !order.CreatedAt.Before(since.Add(-time.Minute)) {
+		sameSize := math.Abs(order.RequestedShares-review.Order.Shares) < 1e-9
+		if review.Order.Notional > 0 && order.EstimatedNotional > 0 {
+			sameSize = math.Abs(order.EstimatedNotional-review.Order.Notional) <= 0.01
+		}
+		if order.Ticker == review.Order.Ticker && order.Side == review.Order.Side && sameSize &&
+			!order.CreatedAt.Before(since.Add(-time.Minute)) {
 			matches = append(matches, order)
 		}
 	}
@@ -691,7 +792,7 @@ func decodeBrokerOrder(record map[string]any, accountID, cycleID string) domain.
 		RequestedShares: requested, FilledShares: filled, RemainingShares: remaining,
 		AverageFillPrice:  floatField(record, "average_fill_price", "averageFillPrice", "avg_fill_price", "avgFillPrice", "executed_price"),
 		EstimatedPrice:    floatField(record, "estimated_price", "estimatedPrice", "price"),
-		EstimatedNotional: floatField(record, "estimated_notional", "estimatedNotional", "estimated_cost", "estimatedCost"),
+		EstimatedNotional: dollarAmountField(record),
 		Status:            status,
 		CreatedAt: timeField(record,
 			"created_at", "createdAt", "submitted_at", "submittedAt",
@@ -700,6 +801,32 @@ func decodeBrokerOrder(record map[string]any, accountID, cycleID string) domain.
 		UpdatedAt: timeField(record, "updated_at", "updatedAt", "last_transaction_at", "lastTransactionAt"),
 		CycleID:   cycleID,
 	}
+}
+
+func dollarAmountField(record map[string]any) float64 {
+	if amount := explicitDollarAmountField(record); amount > 0 {
+		return amount
+	}
+	return floatField(record,
+		"estimated_notional", "estimatedNotional", "estimated_cost", "estimatedCost",
+	)
+}
+
+func explicitDollarAmountField(record map[string]any) float64 {
+	if amount := floatField(record,
+		"dollar_amount", "dollarAmount", "notional_amount", "notionalAmount", "notional",
+	); amount > 0 {
+		return amount
+	}
+	value, ok := lookup(record, "dollar_based_amount", "dollarBasedAmount")
+	if !ok {
+		return 0
+	}
+	nested, ok := value.(map[string]any)
+	if !ok {
+		return 0
+	}
+	return floatField(nested, "amount")
 }
 
 func normalizeStatus(value string) domain.BrokerOrderStatus {
@@ -761,7 +888,7 @@ func applyReviewDefaults(order *domain.BrokerOrder, review domain.OrderReview, a
 	if order.EstimatedPrice <= 0 {
 		order.EstimatedPrice = review.EstimatedPrice
 	}
-	if order.EstimatedNotional <= 0 {
+	if order.EstimatedNotional < review.EstimatedNotional {
 		order.EstimatedNotional = review.EstimatedNotional
 	}
 	if order.CycleID == "" {
