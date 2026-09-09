@@ -248,9 +248,9 @@ func TestShadowModeNeverCallsReviewOrPlaceTools(t *testing.T) {
 			if args["account_number"] != "agent-1" || !reflect.DeepEqual(args["symbols"], []string{"AAPL"}) {
 				t.Fatalf("unexpected tradability arguments: %#v", args)
 			}
-			return rawJSON(`{"tradability":[{"symbol":"AAPL","tradable":true}]}`), nil
+			return rawJSON(`{"data":{"results":[{"symbol":"AAPL","state":"active","tradeable":true,"fractional_tradability":"tradable","all_day_tradability":"tradable","account_type_tradabilities":[{"account_type":"individual","account_type_tradability":"tradable"}]}]}}`), nil
 		case "get_equity_quotes":
-			return rawJSON(`{"quotes":[{"symbol":"AAPL","last_trade_price":200}]}`), nil
+			return rawJSON(`{"data":{"results":[{"quote":{"symbol":"AAPL","last_trade_price":200}}]}}`), nil
 		default:
 			return nil, fmt.Errorf("unsafe tool called in shadow mode: %s", name)
 		}
@@ -274,6 +274,36 @@ func TestShadowModeNeverCallsReviewOrPlaceTools(t *testing.T) {
 		if call.name == "review_equity_order" || call.name == "place_equity_order" {
 			t.Fatalf("unsafe call in shadow mode: %s", call.name)
 		}
+	}
+}
+
+func TestTradabilityRejectsAccountTypeRestriction(t *testing.T) {
+	caller := &fakeCaller{schemas: testSchemas()}
+	caller.handler = func(name string, _ map[string]any) (json.RawMessage, error) {
+		if name != "get_equity_tradability" {
+			return nil, fmt.Errorf("unexpected call %s", name)
+		}
+		return rawJSON(`{"data":{"results":[{"symbol":"AAPL","state":"active","tradeable":true,"account_type_tradabilities":[{"account_type":"individual","account_type_tradability":"untradable"}]}]}}`), nil
+	}
+	broker := newWithCaller(caller, "agent-1", false)
+	err := broker.checkTradability(context.Background(), "AAPL")
+	if err == nil || err.Error() != "Robinhood reports AAPL is not tradable for this account type" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTradabilityFailsClosedForUnknownResponse(t *testing.T) {
+	caller := &fakeCaller{schemas: testSchemas()}
+	caller.handler = func(name string, _ map[string]any) (json.RawMessage, error) {
+		if name != "get_equity_tradability" {
+			return nil, fmt.Errorf("unexpected call %s", name)
+		}
+		return rawJSON(`{"data":{"results":[{"symbol":"AAPL","fractional_tradability":"tradable"}]}}`), nil
+	}
+	broker := newWithCaller(caller, "agent-1", false)
+	err := broker.checkTradability(context.Background(), "AAPL")
+	if err == nil {
+		t.Fatal("ambiguous tradability response was accepted")
 	}
 }
 

@@ -490,22 +490,90 @@ func (b *Broker) checkTradability(ctx context.Context, ticker string) error {
 	if err != nil {
 		return fmt.Errorf("Robinhood get_equity_tradability: %w", err)
 	}
-	items, err := records(raw, "tradability", "result")
+	items, err := records(raw, "tradability", "tradabilities", "result", "results")
 	if err != nil || len(items) == 0 {
 		return errors.New("Robinhood tradability response was empty")
 	}
-	record := items[0]
-	if tradable, known := boolField(record, "tradable", "is_tradable", "isTradable", "can_trade", "canTrade"); known {
-		if !tradable {
-			return fmt.Errorf("Robinhood reports %s is not tradable", ticker)
+	record, err := tradabilityRecord(items, ticker)
+	if err != nil {
+		return err
+	}
+	return validateTradability(record, ticker)
+}
+
+func tradabilityRecord(items []map[string]any, ticker string) (map[string]any, error) {
+	wanted := strings.ToUpper(ticker)
+	matches := make([]map[string]any, 0, 1)
+	for _, item := range items {
+		if strings.ToUpper(stringField(item, "symbol", "ticker")) == wanted {
+			matches = append(matches, item)
 		}
-		return nil
 	}
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	if len(matches) == 0 && len(items) == 1 && stringField(items[0], "symbol", "ticker") == "" {
+		return items[0], nil
+	}
+	return nil, fmt.Errorf("Robinhood tradability response matched %d records for %s", len(matches), wanted)
+}
+
+func validateTradability(record map[string]any, ticker string) error {
+	// Robinhood's current response spells this field "tradeable" and nests
+	// symbol records under data.results. Keep the older aliases for compatible
+	// MCP implementations, but require an explicit affirmative value.
+	tradeable, tradeableKnown := boolField(record,
+		"tradeable", "tradable", "is_tradeable", "isTradeable",
+		"is_tradable", "isTradable", "can_trade", "canTrade",
+	)
+	if tradeableKnown && !tradeable {
+		return fmt.Errorf("Robinhood reports %s is not tradable", ticker)
+	}
+
 	state := strings.ToLower(stringField(record, "state", "status", "tradability"))
-	if state == "tradable" || state == "active" {
+	if state != "" && state != "tradable" && state != "active" {
+		return fmt.Errorf("Robinhood reports %s has tradability state %q", ticker, state)
+	}
+
+	accountTradeable, accountStatusKnown := accountTypeTradeable(record)
+	if accountStatusKnown && !accountTradeable {
+		return fmt.Errorf("Robinhood reports %s is not tradable for this account type", ticker)
+	}
+	if tradeableKnown && tradeable {
 		return nil
 	}
-	return fmt.Errorf("Robinhood did not explicitly confirm %s is tradable", ticker)
+	if accountStatusKnown && accountTradeable && (state == "active" || state == "tradable") {
+		return nil
+	}
+	return fmt.Errorf("Robinhood did not explicitly confirm %s is tradable (response fields: %s)",
+		ticker, strings.Join(sortedKeys(record), ", "))
+}
+
+func accountTypeTradeable(record map[string]any) (bool, bool) {
+	value, present := lookup(record, "account_type_tradabilities", "accountTypeTradabilities")
+	if !present {
+		return false, false
+	}
+	items := recordsFrom(value, nil)
+	if len(items) == 0 {
+		return false, true
+	}
+	for _, item := range items {
+		status := strings.ToLower(stringField(item, "account_type_tradability", "accountTypeTradability"))
+		if status != "tradable" {
+			return false, true
+		}
+	}
+	return true, true
+}
+
+func sortedKeys(record map[string]any) []string {
+	keys := make([]string, 0, len(record))
+	for key := range record {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 type reviewedPayload struct {

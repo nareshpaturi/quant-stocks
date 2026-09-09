@@ -179,7 +179,7 @@ func recordsFrom(value any, containers []string) []map[string]any {
 				}
 			}
 		}
-		for _, wrapper := range []string{"result", "data", "items"} {
+		for _, wrapper := range []string{"result", "results", "data", "items"} {
 			if nested, ok := typed[wrapper]; ok {
 				if result := recordsFrom(nested, containers); len(result) > 0 {
 					return result
