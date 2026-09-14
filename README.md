@@ -374,15 +374,13 @@ Rankings reflect the most recent market close (Friday's close when the Action ru
 
 The Tradier adapter uses `duration=gtc` (good-till-cancelled). Robinhood uses market + day orders and reconciles expired or failed orders on later scheduled runs.
 
-The workflow uses fixed UTC cron slots. Eastern times shift by one hour when daylight saving time changes.
+The workflow uses the `America/New_York` timezone, so these Eastern wall-clock times remain fixed across EST and EDT.
 
-| Day | UTC time | Trigger |
+| Day | Eastern time | Trigger |
 | --- | --- | --- |
-| Monday | 08:30 | Initial weekly reconciliation |
-| Monday | 09:05 | Reconcile broker outcomes |
-| Monday | 14:35 | Reconcile broker outcomes |
-| Tue – Fri | 09:05 | Reconcile pending, filled, and terminal orders |
-| Tue – Fri | 14:35 | Reconcile pending, filled, and terminal orders |
+| Monday–Friday | 7:30 AM | Pre-market reconciliation and order queueing |
+| Monday–Friday | 9:30 AM | Market-open reconciliation |
+| Monday–Friday | 12:00 PM | Midday reconciliation of fills and retries |
 
 Robinhood reconstructs the weekly opening portfolio and replacement budget from cycle order history and actual fills. Tradier continues to reconcile its current-session orders.
 
@@ -478,7 +476,7 @@ All normal `PROFILE_1_*` variables and `RANKING_API_TOKEN` are also required. Th
 - For **organic** slots: `PROFILE_N_INITIAL_AMOUNT_PER_STOCK` is lower than the stock price. Increase this value or choose a lower-priced index to target.
 
 **Buy orders fail immediately after sells with "insufficient buying power" or similar**
-→ The account does not have enough settled cash to fund the buys. Ensure the account is funded with at least `MAX_STOCKS × INITIAL_AMOUNT_PER_STOCK` before the run, or wait until the sell proceeds settle and trigger the workflow again.
+→ A submitted sell is not treated as filled during the same run. A later scheduled run reads the filled cycle order and retries the replacement buy using actual proceeds. Tradier cash accounts are limited by `cash.cash_available`; margin and PDT accounts use `margin.stock_buying_power` and `pdt.stock_buying_power`. Check the `account fetched` log entry to confirm the reported buying power is positive. Organic buys still require sufficient buying power independent of replacement sells.
 
 **Two profiles are buying or selling the same ticker, or cash sizing looks wrong**
 → You are likely using the same Tradier account for multiple profiles. Each profile reads positions, cash, and open orders from its own account independently. When two profiles share an account they see the same cash balance and the same position list — both profiles try to manage the same tickers simultaneously, producing doubled positions, conflicting orders, and incorrect buy sizing. Assign a separate Tradier account (and token) to each profile.

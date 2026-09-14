@@ -47,15 +47,14 @@ name: Weekly Portfolio Rebalance
 
 on:
   schedule:
-    # ── Monday ────────────────────────────────────────────────────────────────
-    # Repeated UTC slots let broker reconciliation converge as orders fill.
-    - cron: "30 8 * * 1"
-    - cron: "5 9 * * 1"
-    - cron: "35 14 * * 1"
-    # ── Tuesday – Friday ──────────────────────────────────────────────────────
-    # Continue reconciling pending, filled, and terminal broker outcomes.
-    - cron: "5 9 * * 2-5"
-    - cron: "35 14 * * 2-5"
+    # Run three times every weekday. Eastern wall-clock slots remain stable
+    # across EST and EDT.
+    - cron: "30 7 * * 1-5"
+      timezone: "America/New_York"
+    - cron: "30 9 * * 1-5"
+      timezone: "America/New_York"
+    - cron: "0 12 * * 1-5"
+      timezone: "America/New_York"
   workflow_dispatch: # Manual trigger.
 
 permissions:

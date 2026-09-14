@@ -136,9 +136,17 @@ type tradierRawQuote struct {
 
 type tradierBalancesResponse struct {
 	Balances struct {
-		Cash struct {
+		AccountType string  `json:"account_type"`
+		TotalCash   float64 `json:"total_cash"`
+		Cash        *struct {
 			CashAvailable float64 `json:"cash_available"`
 		} `json:"cash"`
+		Margin *struct {
+			StockBuyingPower float64 `json:"stock_buying_power"`
+		} `json:"margin"`
+		PDT *struct {
+			StockBuyingPower float64 `json:"stock_buying_power"`
+		} `json:"pdt"`
 	} `json:"balances"`
 }
 
@@ -237,15 +245,44 @@ func (t *TradierBroker) GetPositions(ctx context.Context) ([]domain.Position, er
 
 // ── GetAccount ────────────────────────────────────────────────────────────────
 
-// GetAccount returns Tradier's cash_available as both cash and buying power.
+// GetAccount returns total cash and the equity buying-power branch associated
+// with the Tradier account type. Margin and PDT responses do not include the
+// cash-account object, so treating cash.cash_available as universal silently
+// decodes buying power as zero for those accounts.
 func (t *TradierBroker) GetAccount(ctx context.Context) (domain.AccountSnapshot, error) {
 	endpoint := fmt.Sprintf("%s/accounts/%s/balances", t.baseURL, t.accountID)
 	var resp tradierBalancesResponse
 	if err := t.get(ctx, endpoint, &resp); err != nil {
 		return domain.AccountSnapshot{}, fmt.Errorf("tradier GetAccount: %w", err)
 	}
-	cash := resp.Balances.Cash.CashAvailable
-	return domain.AccountSnapshot{AccountID: t.accountID, Cash: cash, BuyingPower: cash}, nil
+
+	balances := resp.Balances
+	var buyingPower float64
+	switch strings.ToLower(strings.TrimSpace(balances.AccountType)) {
+	case "cash":
+		if balances.Cash == nil {
+			return domain.AccountSnapshot{}, fmt.Errorf("tradier GetAccount: cash account response omitted cash balances")
+		}
+		buyingPower = balances.Cash.CashAvailable
+	case "margin":
+		if balances.Margin == nil {
+			return domain.AccountSnapshot{}, fmt.Errorf("tradier GetAccount: margin account response omitted margin balances")
+		}
+		buyingPower = balances.Margin.StockBuyingPower
+	case "pdt":
+		if balances.PDT == nil {
+			return domain.AccountSnapshot{}, fmt.Errorf("tradier GetAccount: PDT account response omitted PDT balances")
+		}
+		buyingPower = balances.PDT.StockBuyingPower
+	default:
+		return domain.AccountSnapshot{}, fmt.Errorf("tradier GetAccount: unsupported account type %q", balances.AccountType)
+	}
+	if buyingPower < 0 {
+		return domain.AccountSnapshot{}, fmt.Errorf("tradier GetAccount: negative stock buying power %.2f", buyingPower)
+	}
+	return domain.AccountSnapshot{
+		AccountID: t.accountID, Cash: balances.TotalCash, BuyingPower: buyingPower,
+	}, nil
 }
 
 // ── GetOrders ─────────────────────────────────────────────────────────────────
