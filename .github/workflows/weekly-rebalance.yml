@@ -46,16 +46,11 @@ name: Weekly Portfolio Rebalance
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
-  schedule:
-    # Run three times every weekday. Eastern wall-clock slots remain stable
-    # across EST and EDT.
-    - cron: "30 7 * * 1-5"
-      timezone: "America/New_York"
-    - cron: "30 9 * * 1-5"
-      timezone: "America/New_York"
-    - cron: "0 12 * * 1-5"
-      timezone: "America/New_York"
-  workflow_dispatch: # Manual trigger.
+  # Runs at 07:30, 09:30 and 12:00 America/New_York every weekday. The
+  # Cloudflare Worker in scheduler/ calls workflow_dispatch at those times:
+  # GitHub's own `schedule` trigger was starting these runs 4-7 hours late.
+  # The same trigger also serves manual runs from the Actions tab.
+  workflow_dispatch:
 
 permissions:
   contents: read

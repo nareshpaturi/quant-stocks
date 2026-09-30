@@ -1,0 +1,27 @@
+{
+  "name": "quantstocks",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-01",
+
+  // Cron-only Worker: expose no public URL.
+  "workers_dev": false,
+  "preview_urls": false,
+
+  // UTC crons covering both EDT and EST for the 07:30, 09:30 and 12:00 ET slots.
+  // src/index.js drops the invocations that do not land on a New York slot.
+  //   30 11-14 UTC -> 07:30/09:30 ET in EDT (11:30, 13:30) and EST (12:30, 14:30)
+  //   0 16,17 UTC  -> 12:00 ET in EDT (16:00) and EST (17:00)
+  "triggers": {
+    "crons": ["30 11-14 * * MON-FRI", "0 16,17 * * MON-FRI"]
+  },
+
+  // Point these at your fork. The GitHub token is a secret:
+  //   npx wrangler secret put GITHUB_TOKEN
+  "vars": {
+    "GITHUB_REPO": "nareshpaturi/quant-stocks",
+    "WORKFLOW_FILE": "weekly-rebalance.yml",
+    "GITHUB_REF": "main"
+  },
+
+  "observability": { "enabled": true }
+}

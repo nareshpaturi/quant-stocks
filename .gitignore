@@ -22,3 +22,7 @@ vendor/
 .idea/
 .vscode/
 *.swp
+
+# Cloudflare Wrangler local state (scheduler/)
+.wrangler/
+node_modules/

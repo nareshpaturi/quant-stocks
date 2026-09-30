@@ -374,7 +374,7 @@ Rankings reflect the most recent market close (Friday's close when the Action ru
 
 The Tradier adapter uses `duration=gtc` (good-till-cancelled). Robinhood uses market + day orders and reconciles expired or failed orders on later scheduled runs.
 
-The workflow uses the `America/New_York` timezone, so these Eastern wall-clock times remain fixed across EST and EDT.
+The workflow runs at these Eastern wall-clock times, which stay fixed across EST and EDT.
 
 | Day | Eastern time | Trigger |
 | --- | --- | --- |
@@ -385,6 +385,25 @@ The workflow uses the `America/New_York` timezone, so these Eastern wall-clock t
 Robinhood reconstructs the weekly opening portfolio and replacement budget from cycle order history and actual fills. Tradier continues to reconcile its current-session orders.
 
 You can also trigger it manually at any time from **Actions → Weekly Portfolio Rebalance → Run workflow**.
+
+#### Scheduler
+
+GitHub's `schedule` trigger is best-effort and was starting these runs 4–7 hours late, so the workflow has no `schedule:` block. Instead, a free Cloudflare Worker in `scheduler/` calls the workflow's `workflow_dispatch` API at each slot, and GitHub starts the run within seconds. Cloudflare crons are UTC-only, so the Worker fires at both the EDT and EST times and dispatches only when the New York clock matches a slot.
+
+One-time setup:
+
+1. Create a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) with **Repository access: Only select repositories → your fork** and **Permissions → Actions: Read and write**. Note its expiry date; the scheduler stops when it expires.
+2. In `scheduler/wrangler.jsonc`, set `GITHUB_REPO` to your fork.
+3. On a new Cloudflare account, open **Workers & Pages** in the dashboard once so the account gets a workers.dev subdomain. Cron triggers cannot be registered without one (API error 10063), even though this Worker exposes no URL.
+4. From `scheduler/`, deploy:
+
+   ```sh
+   npx wrangler@4 login
+   npx wrangler@4 secret put GITHUB_TOKEN   # paste the token
+   npx wrangler@4 deploy
+   ```
+
+Run `npm test` in `scheduler/` to check the slot logic. Each cron invocation, including failed dispatches, shows up in the Cloudflare dashboard for the `quantstocks` Worker (cron events and Observability logs).
 
 ---
 
@@ -563,5 +582,6 @@ quant-stocks/
 │       └── ranking/
 │           ├── quantmystocks.go        # QuantMyStocks leaderboard API adapter
 │           └── mock_ranking.go         # Hardcoded mock for local testing
+├── scheduler/                          # Cloudflare Worker that dispatches the workflow on time
 └── .github/workflows/weekly-rebalance.yml
 ```
