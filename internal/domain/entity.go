@@ -67,6 +67,8 @@ type OrderDuration string
 const (
 	OrderDurationDay OrderDuration = "day"
 	OrderDurationGTC OrderDuration = "gtc"
+	// OrderDurationOPG executes only in the opening auction.
+	OrderDurationOPG OrderDuration = "opg"
 )
 
 // Order represents a single trade instruction produced by the rebalancer.

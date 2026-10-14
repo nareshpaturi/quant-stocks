@@ -3,15 +3,14 @@ import { test } from "node:test";
 
 import worker, { SLOTS, easternSlot } from "./index.js";
 
-// UTC fire times produced by the crons in wrangler.jsonc on a weekday.
+// UTC fire times produced by the crons in wrangler.jsonc on a weekday, in order.
 const CRON_UTC = [
-  [11, 30], [12, 30], [13, 30], [14, 30],
-  [16, 0], [17, 0],
+  [11, 30], [12, 30], [13, 25], [13, 30], [14, 25], [14, 30],
+  [16, 0], [17, 0], [19, 55], [20, 55],
 ];
 
 const env = {
   GITHUB_REPO: "owner/repo",
-  WORKFLOW_FILE: "weekly-rebalance.yml",
   GITHUB_REF: "main",
   GITHUB_TOKEN: "test-token",
 };
@@ -28,7 +27,7 @@ test("crons dispatch each ET slot exactly once per weekday across DST changes", 
     const fired = CRON_UTC
       .map(([h, m]) => easternSlot(new Date(day + (h * 60 + m) * 60_000)))
       .filter(Boolean);
-    assert.deepEqual(fired, SLOTS, new Date(day).toISOString().slice(0, 10));
+    assert.deepEqual(fired, Object.keys(SLOTS), new Date(day).toISOString().slice(0, 10));
   }
   assert.ok(weekdays > 300);
 });
@@ -52,6 +51,22 @@ test("dispatches the workflow on a slot", async (t) => {
   assert.equal(init.method, "POST");
   assert.equal(init.headers.Authorization, "Bearer test-token");
   assert.deepEqual(JSON.parse(init.body), { ref: "main" });
+});
+
+test("dispatches the overnight buy and sell with their action input", async (t) => {
+  const fetch = t.mock.method(globalThis, "fetch", async () => new Response(null, { status: 204 }));
+  t.mock.method(console, "log", () => {});
+
+  // Tuesday 2026-12-15 09:25 and 15:55 EST.
+  await worker.scheduled({ scheduledTime: Date.parse("2026-12-15T14:25:00Z") }, env);
+  await worker.scheduled({ scheduledTime: Date.parse("2026-12-15T20:55:00Z") }, env);
+
+  assert.equal(fetch.mock.callCount(), 2);
+  const [sell, buy] = fetch.mock.calls.map((call) => call.arguments);
+  assert.equal(sell[0], "https://api.github.com/repos/owner/repo/actions/workflows/overnight-hold.yml/dispatches");
+  assert.deepEqual(JSON.parse(sell[1].body), { ref: "main", inputs: { action: "sell" } });
+  assert.equal(buy[0], "https://api.github.com/repos/owner/repo/actions/workflows/overnight-hold.yml/dispatches");
+  assert.deepEqual(JSON.parse(buy[1].body), { ref: "main", inputs: { action: "buy" } });
 });
 
 test("skips off-slot invocations", async (t) => {
@@ -83,7 +98,7 @@ test("does not retry a rejected token", async (t) => {
 
   await assert.rejects(
     worker.scheduled({ scheduledTime: Date.parse("2026-09-30T16:00:00Z") }, env),
-    /workflow dispatch rejected: 401 Bad credentials/,
+    /weekly-rebalance.yml dispatch rejected: 401 Bad credentials/,
   );
   assert.equal(fetch.mock.callCount(), 1);
 });

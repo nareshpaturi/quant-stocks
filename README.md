@@ -115,6 +115,47 @@ See [Robinhood Trading MCP implementation and rollout](docs/robinhood-mcp.md) fo
 
 ---
 
+## Overnight hold (Alpaca)
+
+A separate workflow, **Overnight Hold**, holds one symbol (SOXL by default) overnight in a dedicated Alpaca account. It does not use the rankings or the rebalance profiles.
+
+| Eastern time | Run starts | What it does |
+| --- | --- | --- |
+| 3:55 PM | `buy` | At 3:58 PM, buys whole shares with 99% of the account's cash using a market order |
+| 9:25 AM | `sell` | Sells the whole position in the 9:30 AM opening auction; at 9:31 AM any shares left are sold with a market order |
+
+Each run starts a few minutes early because a GitHub Actions run takes a minute or two to start, then waits for its exact time. How it behaves:
+
+- **Market days only.** The buy checks Alpaca's market clock and the sell checks Alpaca's calendar, so weekends and holidays do nothing. On early-close days (1:00 PM close) the market is already closed at 3:55 PM, so there is no buy.
+- **Never a late buy.** A market order sent after the close is not rejected by Alpaca but queued for the next open. The buy therefore refuses to send anything after 3:59:30 PM; a run that starts late buys right away if it is still before that.
+- **Cash, not margin.** The buy is sized from the lower of cash and buying power, less `OVERNIGHT_CASH_BUFFER_PCT` (1% by default) so a price tick between the quote and the fill cannot get the order rejected.
+- **No doubling up.** If shares are still held at 3:55 PM because the morning sell did not finish, the buy fails and emails you instead of buying more.
+- **No duplicate orders.** Every order carries a client order id made from the symbol, purpose, and date. A repeated run finds the earlier order and waits for it instead of placing another.
+- **Kill switch.** Set `OVERNIGHT_ENABLED` to anything but `true` to stop new buys. Sells keep running, so a held position is still closed.
+
+The account must be dedicated to this workflow: the sell closes the entire position in the symbol, and the buy spends the account's cash.
+
+### Setup
+
+1. Create an API key in the Alpaca dashboard. Paper and live accounts have separate keys, and the keys must match `ALPACA_PAPER`.
+2. In the **PROD** environment, add the secrets `ALPACA_API_KEY_ID` and `ALPACA_API_SECRET_KEY`.
+3. Add the variables:
+
+   | Variable | Value |
+   | --- | --- |
+   | `OVERNIGHT_ENABLED` | `true` to allow buys |
+   | `OVERNIGHT_SYMBOL` | Optional; defaults to `SOXL` |
+   | `OVERNIGHT_CASH_BUFFER_PCT` | Optional; defaults to `1` |
+   | `ALPACA_PAPER` | Optional; `true` for the paper account, live otherwise |
+   | `ALPACA_DATA_FEED` | Optional; `iex` (free plan, default) or `sip` (paid data plan) |
+
+4. Check the setup without trading: **Actions → Overnight Hold → Run workflow** with `dry_run` ticked. A dry run makes every check and reports the order it would place, without waiting or placing it. Outside market hours the buy reports that the market is closed.
+5. Redeploy the scheduler (see [Scheduler](#scheduler)) so Cloudflare starts the 9:25 AM and 3:55 PM runs.
+
+The summary of every run goes to the job summary and, if the `SMTP_*` secrets are set, to your email. A failed run (for example a buy refused because shares are still held) marks the workflow red.
+
+---
+
 ## Setup guide
 
 ### Step 1 — Fork this repository
@@ -382,13 +423,15 @@ The workflow runs at these Eastern wall-clock times, which stay fixed across EST
 | Monday–Friday | 9:30 AM | Market-open reconciliation |
 | Monday–Friday | 12:00 PM | Midday reconciliation of fills and retries |
 
+The same scheduler also starts the [Overnight Hold](#overnight-hold-alpaca) workflow at 9:25 AM (sell) and 3:55 PM (buy).
+
 Robinhood reconstructs the weekly opening portfolio and replacement budget from cycle order history and actual fills. Tradier continues to reconcile its current-session orders.
 
 You can also trigger it manually at any time from **Actions → Weekly Portfolio Rebalance → Run workflow**.
 
 #### Scheduler
 
-GitHub's `schedule` trigger is best-effort and was starting these runs 4–7 hours late, so the workflow has no `schedule:` block. Instead, a free Cloudflare Worker in `scheduler/` calls the workflow's `workflow_dispatch` API at each slot, and GitHub starts the run within seconds. Cloudflare crons are UTC-only, so the Worker fires at both the EDT and EST times and dispatches only when the New York clock matches a slot.
+GitHub's `schedule` trigger is best-effort and was starting these runs 4–7 hours late, so the workflow has no `schedule:` block. Instead, a free Cloudflare Worker in `scheduler/` calls each workflow's `workflow_dispatch` API at its slots, and GitHub starts the run within seconds. Cloudflare crons are UTC-only, so the Worker fires at both the EDT and EST times and dispatches only when the New York clock matches a slot.
 
 One-time setup:
 
@@ -562,9 +605,11 @@ go test ./... -v
 ```text
 quant-stocks/
 ├── cmd/rebalancer/main.go              # Entry point — reads env vars, runs profiles
+├── cmd/overnight/main.go               # Overnight hold — `overnight buy|sell` on Alpaca
 ├── docs/robinhood-mcp.md               # Robinhood MCP architecture and rollout
 ├── internal/
 │   ├── config/config.go                # Loads profiles from environment variables
+│   ├── config/overnight.go             # Loads overnight-hold settings
 │   ├── domain/
 │   │   ├── entity.go                   # Core types (Position, Rank, Order, …)
 │   │   ├── rebalancer.go               # Pure strategy logic — no I/O
@@ -572,16 +617,21 @@ quant-stocks/
 │   │   └── *_test.go                   # Strategy and reconciliation tests
 │   ├── port/
 │   │   ├── broker.go                   # Broker interface
+│   │   ├── overnight.go                # OvernightBroker interface
 │   │   └── ranking.go                  # RankingProvider interface
 │   ├── service/rebalance_service.go    # Orchestration (fetch → compute → execute)
+│   ├── service/overnight_service.go    # Overnight buy/sell timing and orders
 │   └── adapter/
 │       ├── broker/
 │       │   ├── tradier_broker.go       # Tradier REST API adapter
+│       │   ├── alpaca/                 # Alpaca REST adapter for the overnight hold
 │       │   ├── mock_broker.go          # In-memory mock for testing
 │       │   └── robinhood/              # MCP, OAuth, mapping, and broker adapter
 │       └── ranking/
 │           ├── quantmystocks.go        # QuantMyStocks leaderboard API adapter
 │           └── mock_ranking.go         # Hardcoded mock for local testing
-├── scheduler/                          # Cloudflare Worker that dispatches the workflow on time
-└── .github/workflows/weekly-rebalance.yml
+├── scheduler/                          # Cloudflare Worker that dispatches the workflows on time
+└── .github/workflows/
+    ├── weekly-rebalance.yml
+    └── overnight-hold.yml
 ```

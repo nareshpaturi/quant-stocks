@@ -7,19 +7,25 @@
   "workers_dev": false,
   "preview_urls": false,
 
-  // UTC crons covering both EDT and EST for the 07:30, 09:30 and 12:00 ET slots.
-  // src/index.js drops the invocations that do not land on a New York slot.
+  // UTC crons covering both EDT and EST for every ET slot in src/index.js,
+  // which drops the invocations that do not land on a New York slot.
   //   30 11-14 UTC -> 07:30/09:30 ET in EDT (11:30, 13:30) and EST (12:30, 14:30)
   //   0 16,17 UTC  -> 12:00 ET in EDT (16:00) and EST (17:00)
+  //   25 13,14 UTC -> 09:25 ET in EDT (13:25) and EST (14:25)
+  //   55 19,20 UTC -> 15:55 ET in EDT (19:55) and EST (20:55)
   "triggers": {
-    "crons": ["30 11-14 * * MON-FRI", "0 16,17 * * MON-FRI"]
+    "crons": [
+      "30 11-14 * * MON-FRI",
+      "0 16,17 * * MON-FRI",
+      "25 13,14 * * MON-FRI",
+      "55 19,20 * * MON-FRI"
+    ]
   },
 
   // Point these at your fork. The GitHub token is a secret:
   //   npx wrangler secret put GITHUB_TOKEN
   "vars": {
     "GITHUB_REPO": "nareshpaturi/quant-stocks",
-    "WORKFLOW_FILE": "weekly-rebalance.yml",
     "GITHUB_REF": "main"
   },
 
