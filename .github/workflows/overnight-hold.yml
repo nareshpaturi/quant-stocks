@@ -1,0 +1,117 @@
+name: Overnight Hold
+
+# ── What this does ────────────────────────────────────────────────────────────
+#
+# Holds one symbol (SOXL by default) overnight in a dedicated Alpaca account:
+#
+#   buy   started 15:55 ET; at 15:58 buys whole shares with the account's cash
+#   sell  started 09:25 ET; sells the whole position in the 09:30 opening
+#         auction, then sells anything left with a market order at 09:31
+#
+# The Cloudflare Worker in scheduler/ starts both runs on market days; each run
+# then checks Alpaca's clock and calendar, so holidays and early-close days are
+# skipped. Manual runs from the Actions tab work the same way.
+#
+# ── How to configure ──────────────────────────────────────────────────────────
+#
+# Reads configuration from the PROD GitHub Environment.
+#
+# SECRETS:
+#   ALPACA_API_KEY_ID         Alpaca API key id
+#   ALPACA_API_SECRET_KEY     Alpaca API secret key
+#
+# VARIABLES:
+#   OVERNIGHT_ENABLED         "true" allows buys; otherwise runs only sell
+#   OVERNIGHT_SYMBOL          Symbol to hold overnight (default SOXL)
+#   OVERNIGHT_CASH_BUFFER_PCT Percent of cash left unspent (default 1)
+#   ALPACA_PAPER              "true" for the paper account (default live);
+#                             paper and live use different API keys
+#   ALPACA_DATA_FEED          Quote feed: iex (free, default) or sip
+#
+# Optional email uses the same SMTP_* secrets as the rebalance workflow.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "buy (scheduled 15:55 ET) or sell (scheduled 09:25 ET)"
+        type: choice
+        options: [buy, sell]
+        required: true
+      dry_run:
+        description: "Run every check and report the order without placing it"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Separate from rebalance-prod so a slow rebalance never delays a buy or sell.
+concurrency:
+  group: overnight-prod
+  cancel-in-progress: false
+
+jobs:
+  overnight:
+    name: Overnight ${{ inputs.action }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: PROD
+
+    env:
+      ACTION: ${{ inputs.action }}
+      OVERNIGHT_DRY_RUN: ${{ inputs.dry_run }}
+      OVERNIGHT_ENABLED: ${{ vars.OVERNIGHT_ENABLED }}
+      OVERNIGHT_SYMBOL: ${{ vars.OVERNIGHT_SYMBOL }}
+      OVERNIGHT_CASH_BUFFER_PCT: ${{ vars.OVERNIGHT_CASH_BUFFER_PCT }}
+      ALPACA_PAPER: ${{ vars.ALPACA_PAPER }}
+      ALPACA_DATA_FEED: ${{ vars.ALPACA_DATA_FEED }}
+      ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+      ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
+
+      SMTP_SERVER:    ${{ secrets.SMTP_SERVER }}
+      SMTP_USERNAME:  ${{ secrets.SMTP_USERNAME }}
+      SMTP_PASSWORD:  ${{ secrets.SMTP_PASSWORD }}
+      NOTIFY_EMAIL:   ${{ secrets.NOTIFY_EMAIL }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      # Tests are skipped here: the run has three minutes before its order
+      # time, and the rebalance workflow already runs the suite.
+      - name: Build overnight binary
+        run: go build -o overnight ./cmd/overnight
+
+      - name: Run overnight ${{ inputs.action }}
+        shell: bash # -o pipefail, so a failed run is not masked by tee
+        run: ./overnight "$ACTION" | tee "$RUNNER_TEMP/summary.txt"
+
+      - name: Post job summary
+        if: always()
+        run: |
+          test -s "$RUNNER_TEMP/summary.txt" ||
+            echo "The run produced no summary; see the job log." > "$RUNNER_TEMP/summary.txt"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/summary.txt" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Send summary email
+        if: always() && env.SMTP_SERVER != ''
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ env.SMTP_SERVER }}
+          server_port: 587
+          username: ${{ env.SMTP_USERNAME }}
+          password: ${{ env.SMTP_PASSWORD }}
+          to: ${{ env.NOTIFY_EMAIL }}
+          from: GitHub Actions <${{ env.SMTP_USERNAME }}>
+          subject: "[quant-stocks] Overnight ${{ inputs.action }} ${{ job.status }} — ${{ github.run_number }}"
+          body: file://${{ runner.temp }}/summary.txt
