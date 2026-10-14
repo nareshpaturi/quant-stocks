@@ -31,6 +31,12 @@ const (
 	openFallbackDelay = time.Minute
 	// fillTimeout bounds how long a run waits for a market order to finish.
 	fillTimeout = 2 * time.Minute
+	// minDollarOrder is Alpaca's smallest dollar-amount order.
+	minDollarOrder = 1.0
+	// wholeShareCushion is the share of cash a whole-share buy leaves unspent,
+	// so a price tick between the quote and the fill cannot push the cost past
+	// the cash. A dollar-amount order costs exactly its amount and needs none.
+	wholeShareCushion = 0.01
 )
 
 // OvernightConfig holds the strategy settings for one account.
@@ -39,16 +45,13 @@ type OvernightConfig struct {
 	// BuyEnabled false stops new buys; sells always run so a held position
 	// is still closed.
 	BuyEnabled bool
-	// CashBufferPct is the share of cash left unspent so that a price tick
-	// between the quote and the fill cannot get the buy rejected.
-	CashBufferPct float64
 	// DryRun runs every check and reports the order without waiting for the
 	// order time or placing anything.
 	DryRun bool
 }
 
 // OvernightService buys Symbol with the account's cash two minutes before the
-// regular-session close and sells it in the next session's opening auction.
+// regular-session close and sells it at the next session's open.
 //
 // The scheduler starts each run a few minutes early because a GitHub Actions
 // run takes a minute or two to start; the run itself waits for the exact time.
@@ -141,6 +144,10 @@ func (s *OvernightService) Buy(ctx context.Context) (*OvernightReport, error) {
 		return report, fmt.Errorf("already holding %s shares of %s; this morning's sell did not close the position, so no new buy",
 			formatShares(held), s.cfg.Symbol)
 	}
+	fractional, err := s.broker.IsFractionable(ctx, s.cfg.Symbol)
+	if err != nil {
+		return report, err
+	}
 
 	if !s.cfg.DryRun {
 		if wait := buyAt.Sub(s.now()); wait > maxWait {
@@ -161,43 +168,61 @@ func (s *OvernightService) Buy(ctx context.Context) (*OvernightReport, error) {
 	if err != nil {
 		return report, err
 	}
-	quote, err := s.broker.GetQuote(ctx, s.cfg.Symbol)
-	if err != nil {
-		return report, err
-	}
-	// Size against the higher of ask and last trade so the order never costs
-	// more than the cash it was sized from.
-	price := math.Max(quote.Ask, quote.Last)
-	if price <= 0 {
-		return report, fmt.Errorf("no usable price for %s (bid %.2f, ask %.2f, last %.2f)", s.cfg.Symbol, quote.Bid, quote.Ask, quote.Last)
-	}
 	// Spend cash only: on a margin account buying power is a multiple of it.
-	budget := math.Min(account.Cash, account.BuyingPower) * (1 - s.cfg.CashBufferPct/100)
-	shares := math.Floor(budget / price)
-	if shares < 1 {
-		return report, fmt.Errorf("cash $%.2f (buying power $%.2f) buys no whole shares of %s at $%.2f",
-			account.Cash, account.BuyingPower, s.cfg.Symbol, price)
+	budget := math.Floor(math.Min(account.Cash, account.BuyingPower)*100) / 100
+	report.add("Cash $%.2f, buying power $%.2f.", account.Cash, account.BuyingPower)
+	order := domain.Order{
+		Ticker: s.cfg.Symbol, Side: domain.OrderSideBuy, Type: domain.OrderTypeMarket,
+		Duration: domain.OrderDurationDay, ClientOrderID: clientID, Reason: "overnight-buy",
 	}
-	report.add("Cash $%.2f, buying power $%.2f, %s at $%.2f.", account.Cash, account.BuyingPower, s.cfg.Symbol, price)
-	report.add("Buying %s shares (about $%.2f) with a market order.", formatShares(shares), shares*price)
+	if fractional {
+		if budget < minDollarOrder {
+			return report, fmt.Errorf("cash $%.2f (buying power $%.2f) is below the $%.2f minimum dollar order",
+				account.Cash, account.BuyingPower, minDollarOrder)
+		}
+		order.Notional = budget
+		report.add("Buying $%.2f of %s with a dollar-amount market order.", budget, s.cfg.Symbol)
+	} else {
+		if order.Shares, err = s.wholeShares(ctx, budget, account); err != nil {
+			return report, err
+		}
+		report.add("%s does not trade in fractions; buying %s whole shares with a market order.", s.cfg.Symbol, formatShares(order.Shares))
+	}
 	if s.cfg.DryRun {
 		report.add("Dry run: order not placed.")
 		return report, nil
 	}
 
-	placed, err := s.place(ctx, domain.Order{
-		Ticker: s.cfg.Symbol, Side: domain.OrderSideBuy, Type: domain.OrderTypeMarket,
-		Duration: domain.OrderDurationDay, Shares: shares, ClientOrderID: clientID,
-		Reason: "overnight-buy",
-	})
+	placed, err := s.place(ctx, order)
 	if err != nil {
 		return report, err
 	}
 	return report, s.finish(ctx, report, placed)
 }
 
+// wholeShares sizes a buy for a symbol that cannot be bought in fractions.
+func (s *OvernightService) wholeShares(ctx context.Context, budget float64, account domain.AccountSnapshot) (float64, error) {
+	quote, err := s.broker.GetQuote(ctx, s.cfg.Symbol)
+	if err != nil {
+		return 0, err
+	}
+	// Size against the higher of ask and last trade so the order never costs
+	// more than the cash it was sized from.
+	price := math.Max(quote.Ask, quote.Last)
+	if price <= 0 {
+		return 0, fmt.Errorf("no usable price for %s (bid %.2f, ask %.2f, last %.2f)", s.cfg.Symbol, quote.Bid, quote.Ask, quote.Last)
+	}
+	shares := math.Floor(budget * (1 - wholeShareCushion) / price)
+	if shares < 1 {
+		return 0, fmt.Errorf("cash $%.2f (buying power $%.2f) buys no whole shares of %s at $%.2f",
+			account.Cash, account.BuyingPower, s.cfg.Symbol, price)
+	}
+	return shares, nil
+}
+
 // Sell closes the whole position at today's open: an opening-auction order
-// for the whole shares, then a market order for anything the auction left.
+// for the whole shares, then a market order for the fractional share a dollar
+// buy leaves and for anything the auction did not fill.
 func (s *OvernightService) Sell(ctx context.Context) (*OvernightReport, error) {
 	report := &OvernightReport{Action: "sell", Symbol: s.cfg.Symbol}
 	today := s.now().In(s.newYork)
@@ -391,8 +416,11 @@ func overnightClientID(symbol, purpose string, day time.Time) string {
 }
 
 func describeOrder(order domain.BrokerOrder, location *time.Location) string {
-	text := fmt.Sprintf("%s %s %s shares (%s), %s",
-		order.Side, order.Ticker, formatShares(order.RequestedShares), order.Duration, order.Status)
+	size := formatShares(order.RequestedShares) + " shares"
+	if order.RequestedShares == 0 && order.EstimatedNotional > 0 {
+		size = fmt.Sprintf("$%.2f", order.EstimatedNotional)
+	}
+	text := fmt.Sprintf("%s %s %s (%s), %s", order.Side, order.Ticker, size, order.Duration, order.Status)
 	if order.FilledShares > 0 {
 		text += fmt.Sprintf(", filled %s @ $%.2f = $%.2f",
 			formatShares(order.FilledShares), order.AverageFillPrice, order.FilledValue())

@@ -140,6 +140,61 @@ func TestPlaceOrderSendsMarketOrderOnce(t *testing.T) {
 	}
 }
 
+func TestPlaceOrderSendsDollarAmountWithoutQty(t *testing.T) {
+	broker := newTestBroker(t, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["notional"] != "990.55" || body["time_in_force"] != "day" {
+			t.Fatalf("body=%v, want notional 990.55 day", body)
+		}
+		if _, ok := body["qty"]; ok {
+			t.Fatalf("body=%v carries qty alongside notional", body)
+		}
+		io.WriteString(w, `{"id":"o1","client_order_id":"cid","symbol":"SOXL","side":"buy","type":"market",
+			"time_in_force":"day","qty":null,"notional":"990.55","filled_qty":"0","status":"accepted"}`)
+	})
+	order, err := broker.PlaceOrder(context.Background(), domain.Order{
+		Ticker: "SOXL", Side: domain.OrderSideBuy, Type: domain.OrderTypeMarket,
+		Duration: domain.OrderDurationDay, Notional: 990.55, ClientOrderID: "cid",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if order.EstimatedNotional != 990.55 || order.RequestedShares != 0 || order.RemainingShares != 0 || !order.Active() {
+		t.Fatalf("order=%+v", order)
+	}
+}
+
+func TestPlaceOrderRejectsAmbiguousSize(t *testing.T) {
+	broker := newTestBroker(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("request sent for an invalid order")
+	})
+	for _, order := range []domain.Order{
+		{Shares: 1, Notional: 100, Duration: domain.OrderDurationDay},
+		{Notional: 100, Duration: domain.OrderDurationOPG},
+		{Duration: domain.OrderDurationDay},
+	} {
+		order.Ticker, order.Side, order.Type, order.ClientOrderID = "SOXL", domain.OrderSideBuy, domain.OrderTypeMarket, "cid"
+		if _, err := broker.PlaceOrder(context.Background(), order); err == nil {
+			t.Fatalf("PlaceOrder(%+v) succeeded", order)
+		}
+	}
+}
+
+func TestIsFractionableReadsAsset(t *testing.T) {
+	broker := newTestBroker(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/assets/SOXL" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		io.WriteString(w, `{"symbol":"SOXL","tradable":true,"fractionable":true}`)
+	})
+	if ok, err := broker.IsFractionable(context.Background(), "SOXL"); err != nil || !ok {
+		t.Fatalf("IsFractionable()=%v, %v", ok, err)
+	}
+}
+
 func TestGetOrderByClientIDMapsOrder(t *testing.T) {
 	broker := newTestBroker(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v2/orders:by_client_order_id" || r.URL.Query().Get("client_order_id") != "cid" {
@@ -190,6 +245,11 @@ func TestCalculatedStatusDependsOnFill(t *testing.T) {
 	qty := "10"
 	filled := orderResponse{ID: "a", Qty: &qty, FilledQty: "10", Status: "calculated"}
 	partial := orderResponse{ID: "b", Qty: &qty, FilledQty: "4", Status: "calculated"}
+	amount := "990"
+	dollars := orderResponse{ID: "c", Notional: &amount, FilledQty: "8.95", Status: "calculated"}
+	if order, _ := dollars.toDomain(); order.Status != domain.BrokerOrderFilled {
+		t.Fatalf("filled dollar order mapped to %s", order.Status)
+	}
 	if order, _ := filled.toDomain(); order.Status != domain.BrokerOrderFilled {
 		t.Fatalf("fully filled calculated order mapped to %s", order.Status)
 	}

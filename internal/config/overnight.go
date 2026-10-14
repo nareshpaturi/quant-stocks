@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 )
 
@@ -14,7 +13,6 @@ import (
 //	GitHub Variables
 //	  OVERNIGHT_ENABLED          "true" allows buys; anything else only sells
 //	  OVERNIGHT_SYMBOL           symbol to hold overnight (default SOXL)
-//	  OVERNIGHT_CASH_BUFFER_PCT  percent of cash left unspent (default 1)
 //	  ALPACA_PAPER               "true" uses the paper account (default live)
 //	  ALPACA_DATA_FEED           quote feed: iex (free, default) or sip
 //
@@ -22,11 +20,10 @@ import (
 //	  ALPACA_API_KEY_ID          Alpaca API key id
 //	  ALPACA_API_SECRET_KEY      Alpaca API secret key
 type OvernightConfig struct {
-	Symbol        string
-	Enabled       bool
-	CashBufferPct float64
-	DryRun        bool // OVERNIGHT_DRY_RUN, set from the workflow's dry_run input
-	Alpaca        AlpacaConfig
+	Symbol  string
+	Enabled bool
+	DryRun  bool // OVERNIGHT_DRY_RUN, set from the workflow's dry_run input
+	Alpaca  AlpacaConfig
 }
 
 // AlpacaConfig holds Alpaca credentials and endpoints. Paper and live accounts
@@ -56,10 +53,9 @@ func LoadOvernightFromEnv() (OvernightConfig, error) {
 	}
 
 	cfg := OvernightConfig{
-		Symbol:        strings.ToUpper(strings.TrimSpace(envOrDefault("OVERNIGHT_SYMBOL", "SOXL"))),
-		Enabled:       enabled,
-		CashBufferPct: 1,
-		DryRun:        dryRun,
+		Symbol:  strings.ToUpper(strings.TrimSpace(envOrDefault("OVERNIGHT_SYMBOL", "SOXL"))),
+		Enabled: enabled,
+		DryRun:  dryRun,
 		Alpaca: AlpacaConfig{
 			KeyID:     os.Getenv("ALPACA_API_KEY_ID"),
 			SecretKey: os.Getenv("ALPACA_API_SECRET_KEY"),
@@ -67,17 +63,8 @@ func LoadOvernightFromEnv() (OvernightConfig, error) {
 			DataFeed:  strings.ToLower(envOrDefault("ALPACA_DATA_FEED", "iex")),
 		},
 	}
-	if v := os.Getenv("OVERNIGHT_CASH_BUFFER_PCT"); v != "" {
-		if cfg.CashBufferPct, err = strconv.ParseFloat(v, 64); err != nil {
-			return OvernightConfig{}, fmt.Errorf("GitHub Variable OVERNIGHT_CASH_BUFFER_PCT must be a number, got %q", v)
-		}
-	}
-
 	if !symbolPattern.MatchString(cfg.Symbol) {
 		return OvernightConfig{}, fmt.Errorf("GitHub Variable OVERNIGHT_SYMBOL must be a ticker symbol, got %q", cfg.Symbol)
-	}
-	if cfg.CashBufferPct < 0 || cfg.CashBufferPct >= 50 {
-		return OvernightConfig{}, fmt.Errorf("GitHub Variable OVERNIGHT_CASH_BUFFER_PCT must be at least 0 and below 50, got %g", cfg.CashBufferPct)
 	}
 	if cfg.Alpaca.KeyID == "" {
 		return OvernightConfig{}, fmt.Errorf("GitHub Secret ALPACA_API_KEY_ID is not set")

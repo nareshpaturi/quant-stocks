@@ -102,9 +102,15 @@ type snapshotResponse struct {
 	} `json:"latestQuote"`
 }
 
+type assetResponse struct {
+	Fractionable bool `json:"fractionable"`
+}
+
+// orderRequest carries exactly one of Qty and Notional; Alpaca rejects both.
 type orderRequest struct {
 	Symbol        string `json:"symbol"`
-	Qty           string `json:"qty"`
+	Qty           string `json:"qty,omitempty"`
+	Notional      string `json:"notional,omitempty"`
 	Side          string `json:"side"`
 	Type          string `json:"type"`
 	TimeInForce   string `json:"time_in_force"`
@@ -119,6 +125,7 @@ type orderResponse struct {
 	Type           string     `json:"type"`
 	TimeInForce    string     `json:"time_in_force"`
 	Qty            *string    `json:"qty"`
+	Notional       *string    `json:"notional"`
 	FilledQty      string     `json:"filled_qty"`
 	FilledAvgPrice *string    `json:"filled_avg_price"`
 	Status         string     `json:"status"`
@@ -225,11 +232,21 @@ func (b *Broker) GetQuote(ctx context.Context, symbol string) (domain.Quote, err
 	return quote, nil
 }
 
+// IsFractionable reports Alpaca's fractionable flag for symbol.
+func (b *Broker) IsFractionable(ctx context.Context, symbol string) (bool, error) {
+	var resp assetResponse
+	if err := b.do(ctx, http.MethodGet, b.tradingURL+"/v2/assets/"+url.PathEscape(symbol), nil, &resp); err != nil {
+		return false, fmt.Errorf("alpaca IsFractionable %s: %w", symbol, err)
+	}
+	return resp.Fractionable, nil
+}
+
 // ── Orders ────────────────────────────────────────────────────────────────────
 
-// PlaceOrder submits a market order. Only day and opg time-in-force are used
-// by the strategy, and every order must carry a ClientOrderID so that a
-// failed submission can be checked for later.
+// PlaceOrder submits a market order for Shares or for a Notional dollar
+// amount. Only day and opg time-in-force are used by the strategy (Alpaca
+// allows only day for dollar orders), and every order must carry a
+// ClientOrderID so that a failed submission can be checked for later.
 func (b *Broker) PlaceOrder(ctx context.Context, order domain.Order) (domain.BrokerOrder, error) {
 	if order.Type != domain.OrderTypeMarket {
 		return domain.BrokerOrder{}, fmt.Errorf("alpaca PlaceOrder: unsupported type %q", order.Type)
@@ -237,13 +254,21 @@ func (b *Broker) PlaceOrder(ctx context.Context, order domain.Order) (domain.Bro
 	if order.Duration != domain.OrderDurationDay && order.Duration != domain.OrderDurationOPG {
 		return domain.BrokerOrder{}, fmt.Errorf("alpaca PlaceOrder: unsupported time in force %q", order.Duration)
 	}
-	if order.Shares <= 0 || order.ClientOrderID == "" {
-		return domain.BrokerOrder{}, fmt.Errorf("alpaca PlaceOrder: order needs shares and a client order id")
+	if order.ClientOrderID == "" {
+		return domain.BrokerOrder{}, fmt.Errorf("alpaca PlaceOrder: order needs a client order id")
 	}
 	req := orderRequest{
-		Symbol: order.Ticker, Qty: strconv.FormatFloat(order.Shares, 'f', -1, 64),
-		Side: string(order.Side), Type: string(order.Type),
+		Symbol: order.Ticker, Side: string(order.Side), Type: string(order.Type),
 		TimeInForce: string(order.Duration), ClientOrderID: order.ClientOrderID,
+	}
+	switch {
+	case order.Notional > 0 && order.Shares == 0 && order.Duration == domain.OrderDurationDay:
+		req.Notional = strconv.FormatFloat(order.Notional, 'f', 2, 64)
+	case order.Shares > 0 && order.Notional == 0:
+		req.Qty = strconv.FormatFloat(order.Shares, 'f', -1, 64)
+	default:
+		return domain.BrokerOrder{}, fmt.Errorf("alpaca PlaceOrder: order needs either shares or a day dollar amount, got shares %v notional %v (%s)",
+			order.Shares, order.Notional, order.Duration)
 	}
 	var resp orderResponse
 	if err := b.do(ctx, http.MethodPost, b.tradingURL+"/v2/orders", req, &resp); err != nil {
@@ -296,6 +321,12 @@ func (o orderResponse) toDomain() (domain.BrokerOrder, error) {
 	if err != nil {
 		return domain.BrokerOrder{}, fmt.Errorf("order %s filled_qty %q: %w", o.ID, o.FilledQty, err)
 	}
+	var notional float64
+	if o.Notional != nil {
+		if notional, err = decimal(*o.Notional); err != nil {
+			return domain.BrokerOrder{}, fmt.Errorf("order %s notional %q: %w", o.ID, *o.Notional, err)
+		}
+	}
 	var avgPrice float64
 	if o.FilledAvgPrice != nil {
 		if avgPrice, err = decimal(*o.FilledAvgPrice); err != nil {
@@ -308,17 +339,20 @@ func (o orderResponse) toDomain() (domain.BrokerOrder, error) {
 	// still pending; whether it filled is only visible in the quantities.
 	if o.Status == "calculated" {
 		status = domain.BrokerOrderExpired
-		if requested > 0 && filled >= requested {
+		if (requested > 0 && filled >= requested) || (requested == 0 && filled > 0) {
 			status = domain.BrokerOrderFilled
 		}
 	}
+	// A dollar order has no requested quantity; its amount is carried in
+	// EstimatedNotional.
 	order := domain.BrokerOrder{
 		ID: o.ID, ClientOrderID: o.ClientOrderID, Ticker: o.Symbol,
 		Side: domain.OrderSide(o.Side), Type: domain.OrderType(o.Type),
 		Duration: domain.OrderDuration(o.TimeInForce), RequestedShares: requested,
-		FilledShares: filled, AverageFillPrice: avgPrice, Status: status,
+		FilledShares: filled, AverageFillPrice: avgPrice, EstimatedNotional: notional,
+		Status: status,
 	}
-	if order.Active() {
+	if order.Active() && requested > 0 {
 		order.RemainingShares = requested - filled
 	}
 	if o.SubmittedAt != nil {

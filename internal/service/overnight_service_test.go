@@ -57,6 +57,8 @@ type fakeOvernightBroker struct {
 	quote     domain.Quote
 	price     float64 // fill price
 
+	notFractionable bool
+
 	// auctionOutcome is "fill" (default), or "stuck" to stay open until cancelled.
 	auctionOutcome string
 	// placeErr makes PlaceOrder report an error after accepting the order.
@@ -97,6 +99,10 @@ func (f *fakeOvernightBroker) GetQuote(context.Context, string) (domain.Quote, e
 	return f.quote, nil
 }
 
+func (f *fakeOvernightBroker) IsFractionable(context.Context, string) (bool, error) {
+	return !f.notFractionable, nil
+}
+
 func (f *fakeOvernightBroker) PlaceOrder(_ context.Context, order domain.Order) (domain.BrokerOrder, error) {
 	if _, exists := f.byClient[order.ClientOrderID]; exists {
 		return domain.BrokerOrder{}, errors.New("client_order_id must be unique")
@@ -106,7 +112,8 @@ func (f *fakeOvernightBroker) PlaceOrder(_ context.Context, order domain.Order) 
 	placed := domain.BrokerOrder{
 		ID: id, ClientOrderID: order.ClientOrderID, Ticker: order.Ticker, Side: order.Side,
 		Type: order.Type, Duration: order.Duration, RequestedShares: order.Shares,
-		RemainingShares: order.Shares, Status: domain.BrokerOrderPending, CreatedAt: f.clock.now(),
+		RemainingShares: order.Shares, EstimatedNotional: order.Notional,
+		Status: domain.BrokerOrderPending, CreatedAt: f.clock.now(),
 	}
 	f.orders[id] = placed
 	f.byClient[order.ClientOrderID] = id
@@ -151,6 +158,9 @@ func (f *fakeOvernightBroker) CancelOrder(_ context.Context, id string) error {
 func (f *fakeOvernightBroker) fill(order *domain.BrokerOrder) {
 	order.Status = domain.BrokerOrderFilled
 	order.FilledShares = order.RequestedShares
+	if order.RequestedShares == 0 {
+		order.FilledShares = order.EstimatedNotional / f.price
+	}
 	order.RemainingShares = 0
 	order.AverageFillPrice = f.price
 	order.UpdatedAt = f.clock.now()
@@ -197,7 +207,7 @@ func sellDay(position float64) *fakeOvernightBroker {
 
 func TestBuyWaitsUntilCloseMinusTwoMinutesAndSpendsCash(t *testing.T) {
 	broker := buyDay()
-	report, err := newTestOvernightService(broker, OvernightConfig{BuyEnabled: true, CashBufferPct: 1}).Buy(context.Background())
+	report, err := newTestOvernightService(broker, OvernightConfig{BuyEnabled: true}).Buy(context.Background())
 	if err != nil {
 		t.Fatalf("Buy() error: %v", err)
 	}
@@ -205,10 +215,9 @@ func TestBuyWaitsUntilCloseMinusTwoMinutesAndSpendsCash(t *testing.T) {
 		t.Fatalf("placed %d orders, want 1", len(broker.placed))
 	}
 	got := broker.placed[0]
-	// $10,000 cash, not the $20,000 margin buying power, less 1%, at the
-	// $40.10 ask: floor(9900 / 40.10) = 246.
-	if got.Side != domain.OrderSideBuy || got.Shares != 246 || got.Duration != domain.OrderDurationDay {
-		t.Fatalf("placed %+v, want market day buy of 246", got.Order)
+	// All $10,000 of cash, not the $20,000 margin buying power.
+	if got.Side != domain.OrderSideBuy || got.Notional != 10000 || got.Shares != 0 || got.Duration != domain.OrderDurationDay {
+		t.Fatalf("placed %+v, want $10000 market day buy", got.Order)
 	}
 	if got.ClientOrderID != "overnight-SOXL-buy-2026-10-13" {
 		t.Fatalf("ClientOrderID=%q", got.ClientOrderID)
@@ -216,11 +225,36 @@ func TestBuyWaitsUntilCloseMinusTwoMinutesAndSpendsCash(t *testing.T) {
 	if !got.at.Equal(et("2026-10-13 15:58:00")) {
 		t.Fatalf("placed at %s, want 15:58:00 ET", got.at.In(testNewYork))
 	}
-	if broker.position != 246 {
-		t.Fatalf("position=%v, want 246", broker.position)
+	if broker.position != 250 {
+		t.Fatalf("position=%v, want 250", broker.position)
 	}
-	if !strings.Contains(strings.Join(report.Lines, "\n"), "filled 246 @ $40.00") {
+	if !strings.Contains(strings.Join(report.Lines, "\n"), "buy SOXL $10000.00 (day), filled, filled 250 @ $40.00") {
 		t.Fatalf("report does not show the fill:\n%s", strings.Join(report.Lines, "\n"))
+	}
+}
+
+func TestBuyWholeSharesWhenSymbolIsNotFractionable(t *testing.T) {
+	broker := buyDay()
+	broker.notFractionable = true
+	if _, err := newTestOvernightService(broker, OvernightConfig{BuyEnabled: true}).Buy(context.Background()); err != nil {
+		t.Fatalf("Buy() error: %v", err)
+	}
+	// $10,000 less the 1% cushion at the $40.10 ask, the higher of ask and
+	// last: floor(246.88) = 246.
+	if len(broker.placed) != 1 || broker.placed[0].Shares != 246 || broker.placed[0].Notional != 0 {
+		t.Fatalf("placed %+v, want a 246-share buy", broker.placed)
+	}
+}
+
+func TestBuyRefusesDollarOrderBelowMinimum(t *testing.T) {
+	broker := buyDay()
+	broker.account = domain.AccountSnapshot{Cash: 0.5, BuyingPower: 0.5}
+	_, err := newTestOvernightService(broker, OvernightConfig{BuyEnabled: true}).Buy(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "minimum dollar order") {
+		t.Fatalf("Buy() error=%v, want minimum", err)
+	}
+	if len(broker.placed) != 0 {
+		t.Fatalf("placed %d orders", len(broker.placed))
 	}
 }
 
@@ -303,7 +337,7 @@ func TestBuyAcceptsOrderWhoseSubmissionReportedAnError(t *testing.T) {
 	if _, err := newTestOvernightService(broker, OvernightConfig{BuyEnabled: true}).Buy(context.Background()); err != nil {
 		t.Fatalf("Buy() error: %v", err)
 	}
-	if len(broker.placed) != 1 || broker.position != 249 {
+	if len(broker.placed) != 1 || broker.placed[0].Notional != 10000 || broker.position != 250 {
 		t.Fatalf("placed %d orders, position %v", len(broker.placed), broker.position)
 	}
 }
@@ -327,7 +361,7 @@ func TestBuyDryRunNeitherWaitsNorPlaces(t *testing.T) {
 	if len(broker.placed) != 0 || !broker.clock.t.Equal(et("2026-10-13 15:55:20")) {
 		t.Fatalf("dry run placed %d orders and moved the clock to %s", len(broker.placed), broker.clock.t)
 	}
-	if !strings.Contains(strings.Join(report.Lines, "\n"), "Buying 249 shares") {
+	if !strings.Contains(strings.Join(report.Lines, "\n"), "Buying $10000.00 of SOXL") {
 		t.Fatalf("report does not size the order:\n%s", strings.Join(report.Lines, "\n"))
 	}
 }
@@ -392,6 +426,7 @@ func TestSellPastAuctionCutoffUsesMarketOrderAfterOpen(t *testing.T) {
 }
 
 func TestSellSendsFractionalRemainderAfterAuction(t *testing.T) {
+	// The position a dollar-amount buy leaves.
 	broker := sellDay(10.5)
 	if _, err := newTestOvernightService(broker, OvernightConfig{}).Sell(context.Background()); err != nil {
 		t.Fatalf("Sell() error: %v", err)
