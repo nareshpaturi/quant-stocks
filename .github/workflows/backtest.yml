@@ -106,11 +106,16 @@ jobs:
         run: go build -o rebalancer ./cmd/rebalancer
 
       - name: Run backtest
+        shell: bash # -o pipefail, so a failed run is not masked by tee
         run: ./rebalancer | tee /tmp/summary.txt
 
       - name: Post job summary
         if: always()
         run: |
+          # The email step reads this file too, so create it if the job stopped
+          # before the backtest ran (e.g. a test or build failure).
+          [ -f /tmp/summary.txt ] ||
+            echo "No summary: the job stopped before the backtest ran." > /tmp/summary.txt
           echo '```' >> $GITHUB_STEP_SUMMARY
           cat /tmp/summary.txt >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
