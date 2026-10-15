@@ -28,8 +28,12 @@ type OvernightBroker interface {
 	// GetQuote returns the latest quote and trade price for symbol.
 	GetQuote(ctx context.Context, symbol string) (domain.Quote, error)
 
-	// PlaceOrder submits a market order with the given time-in-force and
-	// ClientOrderID.
+	// IsFractionable reports whether symbol can be bought in fractional
+	// shares, and therefore with a dollar-amount (Notional) order.
+	IsFractionable(ctx context.Context, symbol string) (bool, error)
+
+	// PlaceOrder submits a market order for either Shares or a Notional dollar
+	// amount, with the given time-in-force and ClientOrderID.
 	PlaceOrder(ctx context.Context, order domain.Order) (domain.BrokerOrder, error)
 
 	// GetOrder returns the current state of a previously placed order.

@@ -40,8 +40,7 @@ func main() {
 		os.Exit(1)
 	}
 	svc, err := service.NewOvernightService(broker, service.OvernightConfig{
-		Symbol: cfg.Symbol, BuyEnabled: cfg.Enabled,
-		CashBufferPct: cfg.CashBufferPct, DryRun: cfg.DryRun,
+		Symbol: cfg.Symbol, BuyEnabled: cfg.Enabled, DryRun: cfg.DryRun,
 	}, logger.With("action", action, "symbol", cfg.Symbol))
 	if err != nil {
 		logger.Error("service wiring failed", "error", err)

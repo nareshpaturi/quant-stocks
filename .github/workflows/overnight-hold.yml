@@ -4,9 +4,10 @@ name: Overnight Hold
 #
 # Holds one symbol (SOXL by default) overnight in a dedicated Alpaca account:
 #
-#   buy   started 15:55 ET; at 15:58 buys whole shares with the account's cash
-#   sell  started 09:25 ET; sells the whole position in the 09:30 opening
-#         auction, then sells anything left with a market order at 09:31
+#   buy   started 15:55 ET; at 15:58 buys with the account's cash using a
+#         dollar-amount market order (whole shares if the symbol has no fractions)
+#   sell  started 09:25 ET; sells the whole shares in the 09:30 opening auction,
+#         then sells the fractional share and anything left at 09:31
 #
 # The Cloudflare Worker in scheduler/ starts both runs on market days; each run
 # then checks Alpaca's clock and calendar, so holidays and early-close days are
@@ -23,7 +24,6 @@ name: Overnight Hold
 # VARIABLES:
 #   OVERNIGHT_ENABLED         "true" allows buys; otherwise runs only sell
 #   OVERNIGHT_SYMBOL          Symbol to hold overnight (default SOXL)
-#   OVERNIGHT_CASH_BUFFER_PCT Percent of cash left unspent (default 1)
 #   ALPACA_PAPER              "true" for the paper account (default live);
 #                             paper and live use different API keys
 #   ALPACA_DATA_FEED          Quote feed: iex (free, default) or sip
@@ -64,7 +64,6 @@ jobs:
       OVERNIGHT_DRY_RUN: ${{ inputs.dry_run }}
       OVERNIGHT_ENABLED: ${{ vars.OVERNIGHT_ENABLED }}
       OVERNIGHT_SYMBOL: ${{ vars.OVERNIGHT_SYMBOL }}
-      OVERNIGHT_CASH_BUFFER_PCT: ${{ vars.OVERNIGHT_CASH_BUFFER_PCT }}
       ALPACA_PAPER: ${{ vars.ALPACA_PAPER }}
       ALPACA_DATA_FEED: ${{ vars.ALPACA_DATA_FEED }}
       ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
