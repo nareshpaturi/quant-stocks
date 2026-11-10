@@ -1,0 +1,78 @@
+name: Scheduler Watchdog
+
+# Emails an alert when the Cloudflare Worker in scheduler/ misses a slot: a
+# rebalance or overnight run that should have started has no workflow_dispatch
+# run. The Worker fails silently when its GITHUB_TOKEN expires, so this check
+# runs on GitHub's own scheduler with the workflow's built-in token instead.
+# GitHub can start scheduled runs hours late; that only delays the alert.
+#
+# Uses the SMTP_* secrets in the PROD environment, like the rebalance workflow.
+# Without them the failed run still shows in the Actions tab.
+
+on:
+  schedule:
+    # After the morning slots, and after the 15:55 overnight buy.
+    - cron: "45 9 * * 1-5"
+      timezone: "America/New_York"
+    - cron: "15 16 * * 1-5"
+      timezone: "America/New_York"
+  workflow_dispatch:
+    inputs:
+      lookback_hours:
+        description: "Check slots from this many hours back"
+        default: "30"
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  check:
+    name: Check scheduled runs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: PROD
+
+    env:
+      SMTP_SERVER:    ${{ secrets.SMTP_SERVER }}
+      SMTP_USERNAME:  ${{ secrets.SMTP_USERNAME }}
+      SMTP_PASSWORD:  ${{ secrets.SMTP_PASSWORD }}
+      NOTIFY_EMAIL:   ${{ secrets.NOTIFY_EMAIL }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check for missed slots
+        shell: bash # -o pipefail, so a failed check is not masked by tee
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          LOOKBACK_HOURS: ${{ inputs.lookback_hours }}
+        run: node scheduler/src/watchdog.js | tee "$RUNNER_TEMP/report.txt"
+
+      - name: Post job summary
+        if: always()
+        run: |
+          test -s "$RUNNER_TEMP/report.txt" ||
+            echo "The check produced no report; see the job log." > "$RUNNER_TEMP/report.txt"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/report.txt" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Send alert email
+        if: failure() && env.SMTP_SERVER != ''
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ env.SMTP_SERVER }}
+          server_port: 587
+          username: ${{ env.SMTP_USERNAME }}
+          password: ${{ env.SMTP_PASSWORD }}
+          to: ${{ env.NOTIFY_EMAIL }}
+          from: GitHub Actions <${{ env.SMTP_USERNAME }}>
+          subject: "[quant-stocks] ALERT: scheduler missed runs — ${{ github.run_number }}"
+          body: file://${{ runner.temp }}/report.txt
