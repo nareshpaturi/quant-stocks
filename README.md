@@ -434,7 +434,7 @@ GitHub's `schedule` trigger is best-effort and was starting these runs 4–7 hou
 
 One-time setup:
 
-1. Create a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) with **Repository access: Only select repositories → your fork** and **Permissions → Actions: Read and write**. Note its expiry date; the scheduler stops when it expires.
+1. Create a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) with **Repository access: Only select repositories → your fork** and **Permissions → Actions: Read and write**. GitHub defaults new tokens to a 30-day expiry; pick a longer one. The scheduler stops when the token expires.
 2. In `scheduler/wrangler.jsonc`, set `GITHUB_REPO` to your fork.
 3. On a new Cloudflare account, open **Workers & Pages** in the dashboard once so the account gets a workers.dev subdomain. Cron triggers cannot be registered without one (API error 10063), even though this Worker exposes no URL.
 4. From `scheduler/`, deploy:
@@ -446,6 +446,8 @@ One-time setup:
    ```
 
 Run `npm test` in `scheduler/` to check the slot logic. Each cron invocation, including failed dispatches, shows up in the Cloudflare dashboard for the `quantstocks` Worker (cron events and Observability logs).
+
+A failed dispatch raises no alert by itself; an expired token once stopped every run for ten days unnoticed. The **Scheduler Watchdog** workflow covers this. Twice each weekday it checks that every slot in the last 30 hours has a matching run, and fails and emails the missed slots (using the `SMTP_*` secrets above) when one does not. It runs on GitHub's own scheduler with the workflow's built-in token, so it does not depend on the Worker or its token. GitHub disables scheduled workflows in a public repository after 60 days without activity; re-enable it from the Actions tab if that happens.
 
 ---
 
