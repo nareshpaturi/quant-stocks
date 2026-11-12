@@ -5,18 +5,40 @@
 //
 //   GITHUB_REPOSITORY=owner/repo GITHUB_TOKEN=... node src/watchdog.js
 //
-// Prints a report and exits 1 when a slot in the last LOOKBACK_HOURS (default
-// 30) has no workflow_dispatch run of its workflow.
+// Prints a report and exits 1 when a slot since the previous scheduled check
+// (or in the last LOOKBACK_HOURS, when set) has no workflow_dispatch run of its
+// workflow.
 
 import { fileURLToPath } from "node:url";
 
 import { SLOTS, easternSlot } from "./index.js";
 
 const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+
+const WATCHDOG_WORKFLOW = "scheduler-watchdog.yml";
 
 // A dispatch creates its run within seconds of the slot and the Worker's
 // retries finish within a minute, so slots newer than this are not checked yet.
 export const GRACE_MS = 15 * MINUTE;
+
+// Lookback for the first scheduled check, with no earlier check to continue.
+export const DEFAULT_LOOKBACK_MS = 30 * HOUR;
+
+// Cap on the window after a long gap between checks, such as a weekend plus a
+// dropped run.
+export const MAX_LOOKBACK_MS = 96 * HOUR;
+
+// checkFrom returns where this check's window starts. A scheduled check picks
+// up where the previous scheduled check stopped, so each missed slot is
+// reported once and the alert clears on the first check after a fix. A fixed
+// lookback would re-report misses, because GitHub starts scheduled runs at
+// irregular times.
+export function checkFrom({ now, lookbackHours, previousCheck }) {
+  if (lookbackHours) return now - lookbackHours * HOUR;
+  if (previousCheck == null) return now - DEFAULT_LOOKBACK_MS;
+  return Math.max(previousCheck - GRACE_MS, now - MAX_LOOKBACK_MS);
+}
 
 // expectedRuns lists the {time, slot, workflow} runs the Worker was due to
 // start in [from, to], oldest first.
@@ -39,25 +61,49 @@ export function missingRuns(expected, dispatched) {
       run.workflow === workflow && run.created >= time && run.created <= time + GRACE_MS));
 }
 
-async function dispatchedRuns(repo, token, since) {
+// previousCheck returns when the latest earlier scheduled watchdog run that
+// completed its check was created, or null.
+export function previousCheck(runs, currentRunId) {
+  const checks = runs
+    .filter((run) =>
+      run.workflow === WATCHDOG_WORKFLOW &&
+      run.event === "schedule" &&
+      run.id !== currentRunId &&
+      run.status === "completed" &&
+      (run.conclusion === "success" || run.conclusion === "failure"))
+    .map((run) => run.created);
+  return checks.length ? Math.max(...checks) : null;
+}
+
+async function listRuns(repo, token, since) {
   const created = encodeURIComponent(`>=${new Date(since).toISOString()}`);
-  const res = await fetch(
-    `https://api.github.com/repos/${repo}/actions/runs?event=workflow_dispatch&per_page=100&created=${created}`,
-    {
-      headers: {
-        Accept: "application/vnd.github+json",
-        Authorization: `Bearer ${token}`,
-        "User-Agent": "quant-stocks-scheduler-watchdog",
-        "X-GitHub-Api-Version": "2022-11-28",
+  const runs = [];
+  for (let page = 1; ; page++) {
+    const res = await fetch(
+      `https://api.github.com/repos/${repo}/actions/runs?per_page=100&page=${page}&created=${created}`,
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${token}`,
+          "User-Agent": "quant-stocks-scheduler-watchdog",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
       },
-    },
-  );
-  if (!res.ok) throw new Error(`listing workflow runs failed: ${res.status} ${await res.text()}`);
-  const { workflow_runs: runs } = await res.json();
-  return runs.map((run) => ({
-    workflow: run.path.split("/").pop(),
-    created: Date.parse(run.created_at),
-  }));
+    );
+    if (!res.ok) throw new Error(`listing workflow runs failed: ${res.status} ${await res.text()}`);
+    const { total_count: total, workflow_runs: batch } = await res.json();
+    for (const run of batch) {
+      runs.push({
+        id: run.id,
+        workflow: run.path.split("/").pop(),
+        event: run.event,
+        status: run.status,
+        conclusion: run.conclusion,
+        created: Date.parse(run.created_at),
+      });
+    }
+    if (batch.length === 0 || runs.length >= total) return runs;
+  }
 }
 
 const easternTime = new Intl.DateTimeFormat("en-US", {
@@ -72,16 +118,26 @@ const easternTime = new Intl.DateTimeFormat("en-US", {
 
 async function main() {
   const now = Date.now();
-  const from = now - Number(process.env.LOOKBACK_HOURS || 30) * 60 * MINUTE;
+  const runs = await listRuns(process.env.GITHUB_REPOSITORY, process.env.GITHUB_TOKEN, now - MAX_LOOKBACK_MS);
+  const from = checkFrom({
+    now,
+    lookbackHours: Number(process.env.LOOKBACK_HOURS),
+    previousCheck: previousCheck(runs, Number(process.env.GITHUB_RUN_ID)),
+  });
   const expected = expectedRuns(from, now - GRACE_MS);
-  const dispatched = await dispatchedRuns(process.env.GITHUB_REPOSITORY, process.env.GITHUB_TOKEN, from);
+  const dispatched = runs.filter((run) => run.event === "workflow_dispatch" && run.created >= from);
   const missing = missingRuns(expected, dispatched);
+  const since = `${easternTime.format(from)} ET`;
 
-  if (missing.length === 0) {
-    console.log(`All ${expected.length} scheduled runs since ${easternTime.format(from)} ET started.`);
+  if (expected.length === 0) {
+    console.log(`No slots were due since ${since}.`);
     return;
   }
-  console.log(`The scheduler missed ${missing.length} of ${expected.length} runs since ${easternTime.format(from)} ET:`);
+  if (missing.length === 0) {
+    console.log(`All ${expected.length} scheduled runs since ${since} started.`);
+    return;
+  }
+  console.log(`The scheduler missed ${missing.length} of ${expected.length} runs since ${since}:`);
   console.log();
   for (const { time, workflow } of missing) {
     console.log(`  ${easternTime.format(time)} ET  ${workflow}`);

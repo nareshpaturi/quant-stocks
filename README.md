@@ -447,7 +447,7 @@ One-time setup:
 
 Run `npm test` in `scheduler/` to check the slot logic. Each cron invocation, including failed dispatches, shows up in the Cloudflare dashboard for the `quantstocks` Worker (cron events and Observability logs).
 
-A failed dispatch raises no alert by itself; an expired token once stopped every run for ten days unnoticed. The **Scheduler Watchdog** workflow covers this. Twice each weekday it checks that every slot in the last 30 hours has a matching run, and fails and emails the missed slots (using the `SMTP_*` secrets above) when one does not. It runs on GitHub's own scheduler with the workflow's built-in token, so it does not depend on the Worker or its token. GitHub disables scheduled workflows in a public repository after 60 days without activity; re-enable it from the Actions tab if that happens.
+A failed dispatch raises no alert by itself; an expired token once stopped every run for ten days unnoticed. The **Scheduler Watchdog** workflow covers this. Twice each weekday it checks that every slot since its previous scheduled check has a matching run, and fails and emails the missed slots (using the `SMTP_*` secrets above) when one does not. Each miss is reported once, and the next check after a fix passes. Run it manually from the Actions tab to re-check a longer window. It runs on GitHub's own scheduler with the workflow's built-in token, so it does not depend on the Worker or its token. GitHub disables scheduled workflows in a public repository after 60 days without activity; re-enable it from the Actions tab if that happens.
 
 ---
 
