@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       lookback_hours:
-        description: "Check slots from this many hours back"
+        description: "Check slots from this many hours back (scheduled checks continue from the previous check)"
         default: "30"
 
 permissions:
